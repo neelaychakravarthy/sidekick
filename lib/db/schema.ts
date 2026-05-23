@@ -87,9 +87,10 @@ export const groups = pgTable("groups", {
     .primaryKey()
     .$defaultFn(() => crypto.randomUUID()),
   telegramChatId: text("telegram_chat_id").notNull().unique(),
-  registeredByUserId: text("registered_by_user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
+  registeredByUserId: text("registered_by_user_id").references(
+    () => users.id,
+    { onDelete: "set null" },
+  ),
   name: text("name").notNull(),
   settings: jsonb("settings")
     .$type<Record<string, unknown>>()

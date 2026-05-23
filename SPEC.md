@@ -59,7 +59,7 @@ MVP demo flow: user registers in the Sidekick web app (control plane), gets inst
 
 ## Tech stack
 
-- **Frontend:** Next.js 14 App Router + React + Tailwind + shadcn/ui
+- **Frontend:** Next.js 16 (App Router) + React 19 + Tailwind v4 + shadcn/ui (`base-nova` preset / Base UI primitives, `neutral` base color, CSS variables). `next-themes` for light/dark/system. lucide-react for icons. Originally scoped as Next 14 + Tailwind v3 + shadcn `new-york`/`slate`; `create-next-app@latest` + `shadcn@latest` drifted to current versions during the bootstrap increment. Both still ship App Router + serverless Vercel builds — Eazo compatibility verified at Phase 2 smoke import (see Open questions).
 - **Backend:** Next.js API routes (serverless on Vercel — same model Eazo uses underneath)
 - **Database / storage:** Vercel Postgres (Neon-backed) for Phase 1; potential migration to Eazo's managed Postgres in Phase 2. Drizzle ORM + `drizzle-kit` migrations (works with any Postgres; Eazo's convention).
 - **Auth:** NextAuth.js with Google OAuth provider. (Eazo's built-in user system flagged as potential Phase-2 migration if it integrates cleanly.)
@@ -88,7 +88,7 @@ MVP demo flow: user registers in the Sidekick web app (control plane), gets inst
 - [ ] When user @-mentions `@SidekickBot` in the group with a coordination/planning question, bot posts acknowledgment message ("👀 looking into X…") within ~3s
 - [ ] Bot posts a useful final response (LLM-generated answer) to the chat within ~30s
 - [ ] Control plane updates: activity feed shows the agent run with intent + reasoning; memory view shows any facts the agent stored
-- [ ] Web app is responsive: looks intentional at iPhone width (~390px, primary) AND remains usable at desktop width (1024px+, secondary)
+- 🟡 Web app is responsive: looks intentional at iPhone width (~390px, primary) AND remains usable at desktop width (1024px+, secondary) — _partial: landing page (`/`) demonstrates the mobile-first pattern; future routes (sign-in, dashboard) must follow the same pattern._
 - [ ] App is publicly accessible — Phase 1: `https://sidekick-<hash>.vercel.app`; Phase 2: `*.eazo.dev` URL + submitted via Eazo Mobile when platform is live
 
 ## Required behaviors
@@ -146,6 +146,7 @@ Explicitly NOT in MVP. Listed here so the implementor doesn't accidentally scope
 - **Webhook URL bootstrap:** Telegram webhook needs the deployed URL to register. Order: deploy to Vercel → get URL → set webhook → demo. Re-point to Eazo URL in Phase 2.
 - **NextAuth callback URL:** Google OAuth console needs all callback URLs whitelisted (`http://localhost:3000`, the Vercel URL, and eventually the Eazo URL). Add as you go.
 - **Demo fallback for "where to eat" type questions:** If web search tool not wired by demo time, what's the realism strategy? Options: (a) hardcoded plausible data, (b) LLM-as-knowledge with light prompting, (c) wire a quick Tavily/SerpAPI call. Decide by mid-hackathon.
+- **Eazo `import_project` compatibility with our actual stack versions:** We bootstrapped Next.js 16 + Tailwind v4 + React 19 + shadcn `base-nova` (Base UI), not the Next 14 + Tailwind v3 + shadcn `new-york` originally specced. Both produce App Router + Vercel-serverless builds, but Eazo's reference template was confirmed for Next 14. Verify during the Phase 2 smoke import; downgrade if Eazo's build refuses.
 
 ## Other hard constraints
 

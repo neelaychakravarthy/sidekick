@@ -1,4 +1,45 @@
+import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
+
+import { ANTHROPIC_MODEL, getAnthropic } from "@/lib/anthropic";
+import { db, schema } from "@/lib/db";
 import { inngest } from "@/lib/inngest/client";
+import {
+  buildAnalyzerSystemPrompt,
+  buildAnalyzerUserPrompt,
+  parseAnalyzerDecision,
+} from "@/lib/prompts/analyzer";
+import { bot } from "@/lib/telegram/bot";
+
+const CONTEXT_WINDOW_SIZE = 20;
+const CONTEXT_WINDOW_MINUTES = 30;
+const ACTIVE_RUN_STATUSES = ["queued", "analyzing", "acting"] as const;
+
+function getBotUsernameFromEnv(): string | null {
+  const v = process.env.TELEGRAM_BOT_USERNAME?.trim();
+  if (!v) return null;
+  return v.startsWith("@") ? v.slice(1) : v;
+}
+
+let cachedBotUsername: string | null = null;
+async function resolveBotUsername(): Promise<string> {
+  if (cachedBotUsername) return cachedBotUsername;
+  const fromEnv = getBotUsernameFromEnv();
+  if (fromEnv) {
+    cachedBotUsername = fromEnv;
+    return cachedBotUsername;
+  }
+  // Fall back to bot.api.getMe() — Telegram round-trip, cache forever.
+  const me = await bot.api.getMe();
+  cachedBotUsername = me.username;
+  return cachedBotUsername;
+}
+
+function messageMentionsBot(text: string | null, botUsername: string): boolean {
+  if (!text) return false;
+  // Match "@username" case-insensitively; word-boundary on the right.
+  const re = new RegExp(`@${botUsername}\\b`, "i");
+  return re.test(text);
+}
 
 export const analyzer = inngest.createFunction(
   {
@@ -7,18 +48,189 @@ export const analyzer = inngest.createFunction(
     triggers: [{ event: "message.received" }],
   },
   async ({ event, step, logger }) => {
-    logger.info("[analyzer] received message", {
-      groupId: event.data.groupId,
-      messageId: event.data.messageId,
+    const { groupId, messageId, text } = event.data;
+
+    // Skip non-@-mention messages early (MVP behavior; proactive intervention is V2).
+    const botUsername = await step.run("resolve-bot-username", () =>
+      resolveBotUsername(),
+    );
+    if (!messageMentionsBot(text, botUsername)) {
+      return { decision: "SILENT", reason: "no_mention" };
+    }
+
+    logger.info("[analyzer] bot @-mentioned", { groupId, messageId });
+
+    // Pull context: last N messages (capped by N min), active agent_runs, memory, rules, group meta.
+    const cutoff = new Date(Date.now() - CONTEXT_WINDOW_MINUTES * 60_000);
+
+    const loaded = await step.run("load-context", async () => {
+      const [grp, msgs, runs, mem, rules] = await Promise.all([
+        db.query.groups.findFirst({ where: eq(schema.groups.id, groupId) }),
+        db
+          .select({
+            id: schema.messages.id,
+            text: schema.messages.text,
+            ts: schema.messages.ts,
+            telegramUserId: schema.messages.telegramUserId,
+          })
+          .from(schema.messages)
+          .where(
+            and(
+              eq(schema.messages.groupId, groupId),
+              gte(schema.messages.ts, cutoff),
+            ),
+          )
+          .orderBy(desc(schema.messages.ts))
+          .limit(CONTEXT_WINDOW_SIZE),
+        db
+          .select({
+            id: schema.agentRuns.id,
+            status: schema.agentRuns.status,
+            intentSummary: schema.agentRuns.intentSummary,
+            intentKeywords: schema.agentRuns.intentKeywords,
+          })
+          .from(schema.agentRuns)
+          .where(
+            and(
+              eq(schema.agentRuns.groupId, groupId),
+              inArray(schema.agentRuns.status, ACTIVE_RUN_STATUSES),
+            ),
+          )
+          .orderBy(desc(schema.agentRuns.createdAt))
+          .limit(5),
+        db
+          .select({
+            key: schema.groupMemory.key,
+            value: schema.groupMemory.value,
+            source: schema.groupMemory.source,
+          })
+          .from(schema.groupMemory)
+          .where(eq(schema.groupMemory.groupId, groupId))
+          .limit(50),
+        db
+          .select({ ruleText: schema.groupRules.ruleText })
+          .from(schema.groupRules)
+          .where(eq(schema.groupRules.groupId, groupId))
+          .limit(20),
+      ]);
+      return {
+        group: grp,
+        contextMessages: msgs.reverse(),
+        activeRuns: runs,
+        groupMemory: mem,
+        groupRules: rules,
+      };
     });
 
-    // Skeleton: future implementation will
-    //   1. fetch sliding context window from messages + active agent_runs
-    //   2. call Claude to decide SILENT / DIRECT_REPLY / EXTEND_RUN / NEW_ACTION
-    //   3. on NEW_ACTION, dedup against active runs (keyword overlap), then
-    //      emit "agent.run-requested" via step.sendEvent(...)
-    await step.run("noop", async () => ({ status: "skeleton" }));
+    const group = loaded.group;
+    if (!group) {
+      logger.warn("[analyzer] group not found, skipping", { groupId });
+      return { decision: "SILENT", reason: "no_group" };
+    }
 
-    return { status: "skeleton", decision: "SILENT" };
-  }
+    // Re-hydrate Date fields after Inngest step serialization (Dates become ISO strings).
+    const contextMessages = loaded.contextMessages.map((m) => ({
+      ...m,
+      ts: new Date(m.ts as unknown as string | Date),
+    }));
+
+    // Call Claude for the decision.
+    const decision = await step.run("analyzer-llm", async () => {
+      const client = getAnthropic();
+      const system = buildAnalyzerSystemPrompt();
+      const user = buildAnalyzerUserPrompt({
+        groupName: group.name,
+        triggerText: text ?? "",
+        contextMessages: contextMessages.map((m) => ({
+          sender: m.telegramUserId ?? "unknown",
+          text: m.text ?? "(no text)",
+          ts: m.ts,
+        })),
+        activeRuns: loaded.activeRuns.map((r) => ({
+          id: r.id,
+          intentSummary: r.intentSummary,
+          intentKeywords: r.intentKeywords,
+          status: r.status,
+        })),
+        groupMemory: loaded.groupMemory,
+        groupRules: loaded.groupRules,
+      });
+      const resp = await client.messages.create({
+        model: ANTHROPIC_MODEL,
+        max_tokens: 1024,
+        system,
+        messages: [{ role: "user", content: user }],
+      });
+      const rawText = resp.content
+        .filter((b) => b.type === "text")
+        .map((b) => (b as { type: "text"; text: string }).text)
+        .join("");
+      return parseAnalyzerDecision(rawText);
+    });
+
+    logger.info("[analyzer] decision", { decision: decision.kind, groupId });
+
+    // Act on the decision.
+    if (decision.kind === "SILENT") {
+      return { decision: "SILENT", reason: "llm" };
+    }
+
+    if (decision.kind === "DIRECT_REPLY") {
+      await step.run("post-direct-reply", async () => {
+        await bot.api.sendMessage(Number(group.telegramChatId), decision.text);
+      });
+      return { decision: "DIRECT_REPLY" };
+    }
+
+    if (decision.kind === "EXTEND_RUN") {
+      // Append this trigger message to the existing run's trigger_message_ids
+      await step.run("extend-run", async () => {
+        await db
+          .update(schema.agentRuns)
+          .set({
+            triggerMessageIds: sql`array_append(${schema.agentRuns.triggerMessageIds}, ${messageId})`,
+            intentSummary: decision.intentSummary,
+            intentKeywords: decision.intentKeywords,
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.agentRuns.id, decision.extendsRunId));
+      });
+      // Re-emit agent.run-requested so the executor picks up the extended context
+      await step.sendEvent("re-emit-extended", {
+        name: "agent.run-requested",
+        data: {
+          groupId,
+          runId: decision.extendsRunId,
+          triggerMessageIds: [messageId],
+        },
+      });
+      return { decision: "EXTEND_RUN", runId: decision.extendsRunId };
+    }
+
+    // NEW_ACTION
+    const newRunId = await step.run("create-agent-run", async () => {
+      const inserted = await db
+        .insert(schema.agentRuns)
+        .values({
+          groupId,
+          triggerMessageIds: [messageId],
+          status: "queued",
+          intentSummary: decision.intentSummary,
+          intentKeywords: decision.intentKeywords,
+        })
+        .returning({ id: schema.agentRuns.id });
+      return inserted[0].id;
+    });
+
+    await step.sendEvent("emit-run-requested", {
+      name: "agent.run-requested",
+      data: {
+        groupId,
+        runId: newRunId,
+        triggerMessageIds: [messageId],
+      },
+    });
+
+    return { decision: "NEW_ACTION", runId: newRunId };
+  },
 );

@@ -1,0 +1,234 @@
+import { relations, sql } from "drizzle-orm";
+import {
+  jsonb,
+  pgEnum,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
+
+// ---------- Enums ----------
+
+export const agentRunStatus = pgEnum("agent_run_status", [
+  "queued",
+  "analyzing",
+  "acting",
+  "responded",
+  "failed",
+]);
+
+export const memorySource = pgEnum("memory_source", [
+  "inferred",
+  "user-stated",
+]);
+
+// ---------- Tables ----------
+
+export const users = pgTable("users", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  email: text("email").notNull().unique(),
+  googleId: text("google_id").unique(),
+  name: text("name"),
+  image: text("image"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+});
+
+export const groups = pgTable("groups", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  telegramChatId: text("telegram_chat_id").notNull().unique(),
+  registeredByUserId: text("registered_by_user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  settings: jsonb("settings")
+    .$type<Record<string, unknown>>()
+    .notNull()
+    .default({}),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+});
+
+export const groupMembers = pgTable(
+  "group_members",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    groupId: text("group_id")
+      .notNull()
+      .references(() => groups.id, { onDelete: "cascade" }),
+    telegramUserId: text("telegram_user_id").notNull(),
+    telegramUsername: text("telegram_username"),
+    displayName: text("display_name"),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => ({
+    groupTgUserUnique: uniqueIndex("group_members_group_tg_user").on(
+      t.groupId,
+      t.telegramUserId,
+    ),
+  }),
+);
+
+export const messages = pgTable(
+  "messages",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    groupId: text("group_id")
+      .notNull()
+      .references(() => groups.id, { onDelete: "cascade" }),
+    telegramMessageId: text("telegram_message_id").notNull(),
+    telegramUserId: text("telegram_user_id"),
+    text: text("text"),
+    ts: timestamp("ts", { withTimezone: true }).notNull(),
+    raw: jsonb("raw").$type<Record<string, unknown>>().notNull(),
+  },
+  (t) => ({
+    groupTgMsgUnique: uniqueIndex("messages_group_tg_msg").on(
+      t.groupId,
+      t.telegramMessageId,
+    ),
+  }),
+);
+
+export const agentRuns = pgTable("agent_runs", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  groupId: text("group_id")
+    .notNull()
+    .references(() => groups.id, { onDelete: "cascade" }),
+  triggerMessageIds: text("trigger_message_ids")
+    .array()
+    .notNull()
+    .default(sql`'{}'::text[]`),
+  status: agentRunStatus("status").notNull().default("queued"),
+  intentSummary: text("intent_summary"),
+  intentKeywords: text("intent_keywords")
+    .array()
+    .notNull()
+    .default(sql`'{}'::text[]`),
+  ackMessageId: text("ack_message_id"),
+  responseMessageId: text("response_message_id"),
+  reasoning: text("reasoning"),
+  errorText: text("error_text"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+  respondedAt: timestamp("responded_at", { withTimezone: true }),
+});
+
+export const groupMemory = pgTable(
+  "group_memory",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    groupId: text("group_id")
+      .notNull()
+      .references(() => groups.id, { onDelete: "cascade" }),
+    key: text("key").notNull(),
+    value: jsonb("value").$type<unknown>().notNull(),
+    source: memorySource("source").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => ({
+    groupKeyUnique: uniqueIndex("group_memory_group_key").on(t.groupId, t.key),
+  }),
+);
+
+export const groupRules = pgTable("group_rules", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  groupId: text("group_id")
+    .notNull()
+    .references(() => groups.id, { onDelete: "cascade" }),
+  ruleText: text("rule_text").notNull(),
+  createdByTelegramUserId: text("created_by_telegram_user_id"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+});
+
+// ---------- Relations ----------
+
+export const usersRelations = relations(users, ({ many }) => ({
+  groups: many(groups),
+}));
+
+export const groupsRelations = relations(groups, ({ one, many }) => ({
+  registeredBy: one(users, {
+    fields: [groups.registeredByUserId],
+    references: [users.id],
+  }),
+  members: many(groupMembers),
+  messages: many(messages),
+  runs: many(agentRuns),
+  memory: many(groupMemory),
+  rules: many(groupRules),
+}));
+
+export const groupMembersRelations = relations(groupMembers, ({ one }) => ({
+  group: one(groups, {
+    fields: [groupMembers.groupId],
+    references: [groups.id],
+  }),
+}));
+
+export const messagesRelations = relations(messages, ({ one }) => ({
+  group: one(groups, {
+    fields: [messages.groupId],
+    references: [groups.id],
+  }),
+}));
+
+export const agentRunsRelations = relations(agentRuns, ({ one }) => ({
+  group: one(groups, {
+    fields: [agentRuns.groupId],
+    references: [groups.id],
+  }),
+}));
+
+export const groupMemoryRelations = relations(groupMemory, ({ one }) => ({
+  group: one(groups, {
+    fields: [groupMemory.groupId],
+    references: [groups.id],
+  }),
+}));
+
+export const groupRulesRelations = relations(groupRules, ({ one }) => ({
+  group: one(groups, {
+    fields: [groupRules.groupId],
+    references: [groups.id],
+  }),
+}));

@@ -89,7 +89,7 @@ export const groups = pgTable("groups", {
   telegramChatId: text("telegram_chat_id").notNull().unique(),
   registeredByUserId: text("registered_by_user_id").references(
     () => users.id,
-    { onDelete: "set null" },
+    { onDelete: "cascade" },
   ),
   name: text("name").notNull(),
   settings: jsonb("settings")

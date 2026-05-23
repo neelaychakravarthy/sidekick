@@ -61,7 +61,19 @@ export default async function DashboardPage() {
   ])
 
   return (
-    <div className="grid grid-cols-1 gap-4 md:grid-cols-3 md:gap-6">
+    <>
+      <div className="mb-8 flex items-center justify-between">
+        <h1 className="font-heading text-3xl font-semibold tracking-tight">
+          Dashboard
+        </h1>
+        <Button
+          variant="ghost"
+          nativeButton={false}
+          className="h-10"
+          render={<Link href="/dashboard/account">Account →</Link>}
+        />
+      </div>
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3 md:gap-6">
       <Card className="p-6">
         <CardHeader className="gap-3 px-0">
           <div className="flex size-10 items-center justify-center rounded-md bg-muted text-foreground">
@@ -159,6 +171,7 @@ export default async function DashboardPage() {
           </CardContent>
         )}
       </Card>
-    </div>
+      </div>
+    </>
   )
 }

@@ -1,5 +1,6 @@
 import { desc, eq } from "drizzle-orm"
 import { Activity, Brain, Users } from "lucide-react"
+import Link from "next/link"
 
 import { auth } from "@/auth"
 import { Button } from "@/components/ui/button"
@@ -75,15 +76,30 @@ export default async function DashboardPage() {
         </CardHeader>
         <CardContent className="px-0">
           {userGroups.length === 0 ? (
-            <Button disabled size="lg" className="h-12 px-6 text-base">
-              Connect a Telegram group
-            </Button>
+            <Button
+              nativeButton={false}
+              size="lg"
+              className="h-12 px-6 text-base"
+              render={
+                <Link href="/dashboard/connect">Connect a Telegram group</Link>
+              }
+            />
           ) : (
-            <ul className="space-y-2 text-sm">
-              {userGroups.map((g) => (
-                <li key={g.id}>{g.name}</li>
-              ))}
-            </ul>
+            <>
+              <ul className="mb-3 space-y-2 text-sm">
+                {userGroups.map((g) => (
+                  <li key={g.id}>{g.name}</li>
+                ))}
+              </ul>
+              <Button
+                variant="outline"
+                nativeButton={false}
+                className="h-11"
+                render={
+                  <Link href="/dashboard/connect">Connect another group</Link>
+                }
+              />
+            </>
           )}
         </CardContent>
       </Card>

@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, gt, isNull } from "drizzle-orm";
 import { Bot } from "grammy";
 
 import { db, schema } from "@/lib/db";
@@ -53,6 +53,70 @@ if (!isCachedBot) {
         console.error("[telegram] failed to post intro message:", err);
       }
     }
+  });
+
+  // Claim a group: links the Telegram group to the user who generated the token
+  // from the dashboard. Must run BEFORE bot.on("message") — without next() the
+  // chain stops, so claim text never falls through to message persistence.
+  const CLAIM_RE = /(?:@\w+\s+)?\/?claim\s+([a-zA-Z0-9]+)/i;
+
+  bot.hears(CLAIM_RE, async (ctx) => {
+    const chatType = ctx.chat.type;
+    if (chatType !== "group" && chatType !== "supergroup") return;
+
+    const matchedToken = ctx.match?.[1];
+    if (!matchedToken) return;
+
+    const tokenInput = matchedToken.toLowerCase();
+    const chatId = ctx.chat.id.toString();
+
+    // Look up token: must exist, not used, not expired
+    const claim = await db.query.claimTokens.findFirst({
+      where: and(
+        eq(schema.claimTokens.token, tokenInput),
+        isNull(schema.claimTokens.usedAt),
+        gt(schema.claimTokens.expiresAt, new Date()),
+      ),
+    });
+
+    if (!claim) {
+      await ctx.reply(
+        "❌ That claim token is invalid, expired, or already used. Generate a new one from the dashboard.",
+      );
+      return;
+    }
+
+    // Look up the group (must already be registered — bot must be in it)
+    const group = await db.query.groups.findFirst({
+      where: eq(schema.groups.telegramChatId, chatId),
+    });
+
+    if (!group) {
+      await ctx.reply(
+        "❌ This group isn't registered yet. Make sure I'm a member of the group, then try again.",
+      );
+      return;
+    }
+
+    // Look up the user (for the success message)
+    const user = await db.query.users.findFirst({
+      where: eq(schema.users.id, claim.userId),
+    });
+
+    // Link group → user
+    await db
+      .update(schema.groups)
+      .set({ registeredByUserId: claim.userId, updatedAt: new Date() })
+      .where(eq(schema.groups.id, group.id));
+
+    // Mark token used
+    await db
+      .update(schema.claimTokens)
+      .set({ usedAt: new Date() })
+      .where(eq(schema.claimTokens.id, claim.id));
+
+    const displayName = user?.name ?? user?.email ?? "user";
+    await ctx.reply(`✅ Group connected to ${displayName}'s dashboard.`);
   });
 
   // New message in a group

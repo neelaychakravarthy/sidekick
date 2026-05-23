@@ -1,15 +1,23 @@
 import type { agentRunStatus } from "@/lib/db/schema";
 
+export type InferredFact = { key: string; value: string };
+
 export type AnalyzerDecision =
-  | { kind: "SILENT" }
-  | { kind: "DIRECT_REPLY"; text: string }
+  | { kind: "SILENT"; inferredFacts: InferredFact[] }
+  | { kind: "DIRECT_REPLY"; text: string; inferredFacts: InferredFact[] }
   | {
       kind: "EXTEND_RUN";
       extendsRunId: string;
       intentSummary: string;
       intentKeywords: string[];
+      inferredFacts: InferredFact[];
     }
-  | { kind: "NEW_ACTION"; intentSummary: string; intentKeywords: string[] };
+  | {
+      kind: "NEW_ACTION";
+      intentSummary: string;
+      intentKeywords: string[];
+      inferredFacts: InferredFact[];
+    };
 
 export type AnalyzerInput = {
   groupName: string;
@@ -36,13 +44,23 @@ Decision options:
 - EXTEND_RUN: this message is a follow-up to an active in-flight agent run (provide the run ID it extends, plus updated intent)
 - NEW_ACTION: this is a real coordination/planning request that warrants kicking off a new agent run (e.g., "help plan dinner", "make a poll")
 
+Memory extraction (every response, regardless of decision):
+- Scan the recent messages for concrete, durable facts: e.g., "Armeen is vegan" → { key: "armeen_diet", value: "vegan" }; "We agreed to meet at 7pm Friday" → { key: "next_meeting", value: "7pm Friday" }; "Group prefers Vietnamese over Thai" → { key: "cuisine_preference", value: "Vietnamese over Thai" }.
+- 0-3 facts. Quality over quantity. Skip if nothing genuinely new.
+- Keys must be snake_case, lowercase, ≤ 40 chars, stable (so repeated mentions update the same key).
+- Values are short strings (≤ 200 chars).
+- DO NOT extract greetings, jokes, ephemeral chat, or things already in the provided "Group memory" list above.
+
 CRITICAL: Respond ONLY with valid JSON. No prose before or after. Schema:
 {
   "decision": "SILENT" | "DIRECT_REPLY" | "EXTEND_RUN" | "NEW_ACTION",
   "intent_summary": string (1 sentence, only for EXTEND_RUN and NEW_ACTION),
   "intent_keywords": string[] (3-7 keywords lowercased, only for EXTEND_RUN and NEW_ACTION),
   "extends_run_id": string (only for EXTEND_RUN),
-  "direct_reply_text": string (only for DIRECT_REPLY, max 200 chars, plain text)
+  "direct_reply_text": string (only for DIRECT_REPLY, max 200 chars, plain text),
+  "inferred_facts": [
+    { "key": "<snake_case identifier ≤ 40 chars>", "value": "<short stringified fact, ≤ 200 chars>" }
+  ]  (0 to 3 entries; ALWAYS present, even if empty; extract concrete facts about people, preferences, recurring patterns, decisions, plans, or constraints that appeared in the context — NOT speculation or trivia)
 }`;
 }
 
@@ -98,13 +116,33 @@ export function parseAnalyzerDecision(raw: string): AnalyzerDecision {
     .replace(/\n?```$/, "");
   const parsed = JSON.parse(cleaned) as Record<string, unknown>;
   const decision = parsed.decision;
+  const rawFacts = Array.isArray(parsed.inferred_facts)
+    ? parsed.inferred_facts
+    : [];
+  const inferredFacts: InferredFact[] = rawFacts
+    .filter(
+      (f): f is Record<string, unknown> => typeof f === "object" && f !== null,
+    )
+    .map((f) => ({
+      key: String((f as { key?: unknown }).key ?? "")
+        .trim()
+        .toLowerCase()
+        .slice(0, 40),
+      value: String((f as { value?: unknown }).value ?? "")
+        .trim()
+        .slice(0, 200),
+    }))
+    .filter((f) => f.key.length > 0 && f.value.length > 0)
+    .slice(0, 3);
+
   switch (decision) {
     case "SILENT":
-      return { kind: "SILENT" };
+      return { kind: "SILENT", inferredFacts };
     case "DIRECT_REPLY":
       return {
         kind: "DIRECT_REPLY",
         text: String(parsed.direct_reply_text ?? "Got it."),
+        inferredFacts,
       };
     case "EXTEND_RUN":
       return {
@@ -114,6 +152,7 @@ export function parseAnalyzerDecision(raw: string): AnalyzerDecision {
         intentKeywords: Array.isArray(parsed.intent_keywords)
           ? (parsed.intent_keywords as string[])
           : [],
+        inferredFacts,
       };
     case "NEW_ACTION":
       return {
@@ -122,6 +161,7 @@ export function parseAnalyzerDecision(raw: string): AnalyzerDecision {
         intentKeywords: Array.isArray(parsed.intent_keywords)
           ? (parsed.intent_keywords as string[])
           : [],
+        inferredFacts,
       };
     default:
       throw new Error(`Analyzer returned unknown decision: ${String(decision)}`);

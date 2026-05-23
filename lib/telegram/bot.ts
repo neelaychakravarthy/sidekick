@@ -1,4 +1,4 @@
-import { and, eq, gt, isNull } from "drizzle-orm";
+import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import { Bot } from "grammy";
 
 import { db, schema } from "@/lib/db";
@@ -117,6 +117,83 @@ if (!isCachedBot) {
 
     const displayName = user?.name ?? user?.email ?? "user";
     await ctx.reply(`✅ Group connected to ${displayName}'s dashboard.`);
+  });
+
+  // Explicit memory commands. Registered AFTER claim and BEFORE the generic
+  // message handler so they intercept their specific commands before the
+  // catch-all message persistence/Inngest emit path runs.
+  const REMEMBER_RE = /(?:@\w+\s+)?\/?remember\s+(.+)/i;
+  const RULE_RE = /(?:@\w+\s+)?\/?rule:\s*(.+)/i;
+
+  // Helper: derive a snake_case key from natural-language text
+  function deriveMemoryKey(text: string): string {
+    return (
+      text
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, "")
+        .trim()
+        .split(/\s+/)
+        .slice(0, 5)
+        .join("_")
+        .slice(0, 40) || "fact"
+    );
+  }
+
+  bot.hears(RULE_RE, async (ctx) => {
+    const chatType = ctx.chat.type;
+    if (chatType !== "group" && chatType !== "supergroup") return;
+
+    const ruleText = ctx.match[1].trim();
+    if (!ruleText) return;
+
+    const chatId = ctx.chat.id.toString();
+    const group = await db.query.groups.findFirst({
+      where: eq(schema.groups.telegramChatId, chatId),
+    });
+    if (!group) return;
+
+    await db.insert(schema.groupRules).values({
+      groupId: group.id,
+      ruleText,
+      createdByTelegramUserId: ctx.from?.id?.toString() ?? null,
+    });
+
+    await ctx.reply(`📜 Rule added: ${ruleText}`);
+  });
+
+  bot.hears(REMEMBER_RE, async (ctx) => {
+    const chatType = ctx.chat.type;
+    if (chatType !== "group" && chatType !== "supergroup") return;
+
+    const factText = ctx.match[1].trim();
+    if (!factText) return;
+
+    const chatId = ctx.chat.id.toString();
+    const group = await db.query.groups.findFirst({
+      where: eq(schema.groups.telegramChatId, chatId),
+    });
+    if (!group) return;
+
+    const key = deriveMemoryKey(factText);
+
+    await db
+      .insert(schema.groupMemory)
+      .values({
+        groupId: group.id,
+        key,
+        value: factText,
+        source: "user-stated" as const,
+      })
+      .onConflictDoUpdate({
+        target: [schema.groupMemory.groupId, schema.groupMemory.key],
+        set: {
+          value: sql`excluded.value`,
+          source: sql`excluded.source`,
+          updatedAt: new Date(),
+        },
+      });
+
+    await ctx.reply(`🧠 Noted: ${factText}`);
   });
 
   // New message in a group

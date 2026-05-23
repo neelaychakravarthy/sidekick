@@ -170,6 +170,30 @@ export const analyzer = inngest.createFunction(
 
     logger.info("[analyzer] decision", { decision: decision.kind, groupId });
 
+    // Persist inferred memory facts regardless of decision branch.
+    if (decision.inferredFacts.length > 0) {
+      await step.run("persist-inferred-memory", async () => {
+        await db
+          .insert(schema.groupMemory)
+          .values(
+            decision.inferredFacts.map((f) => ({
+              groupId,
+              key: f.key,
+              value: f.value, // jsonb accepts strings as a JSON value
+              source: "inferred" as const,
+            })),
+          )
+          .onConflictDoUpdate({
+            target: [schema.groupMemory.groupId, schema.groupMemory.key],
+            set: {
+              value: sql`excluded.value`,
+              source: sql`excluded.source`,
+              updatedAt: new Date(),
+            },
+          });
+      });
+    }
+
     // Act on the decision.
     if (decision.kind === "SILENT") {
       return { decision: "SILENT", reason: "llm" };

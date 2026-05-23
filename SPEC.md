@@ -62,7 +62,7 @@ MVP demo flow: user registers in the Sidekick web app (control plane), gets inst
 - **Frontend:** Next.js 16 (App Router) + React 19 + Tailwind v4 + shadcn/ui (`base-nova` preset / Base UI primitives, `neutral` base color, CSS variables). `next-themes` for light/dark/system. lucide-react for icons. Originally scoped as Next 14 + Tailwind v3 + shadcn `new-york`/`slate`; `create-next-app@latest` + `shadcn@latest` drifted to current versions during the bootstrap increment. Both still ship App Router + serverless Vercel builds — Eazo compatibility verified at Phase 2 smoke import (see Open questions).
 - **Backend:** Next.js API routes (serverless on Vercel — same model Eazo uses underneath)
 - **Database / storage:** Vercel Postgres (Neon-backed) for Phase 1; potential migration to Eazo's managed Postgres in Phase 2. Drizzle ORM + `drizzle-kit` migrations (works with any Postgres; Eazo's convention).
-- **Auth:** NextAuth.js with Google OAuth provider. (Eazo's built-in user system flagged as potential Phase-2 migration if it integrates cleanly.)
+- **Auth:** NextAuth.js v5 / Auth.js (`next-auth@beta`) with Google OAuth provider. JWT-only sessions in MVP (no DB adapter); DB adapter to be added when the Drizzle increment lands if we want server-revocable sessions. Custom `/signin` + `/signup` routes (UX-only split; same OAuth flow under the hood until DB enables first-time detection). Middleware protects `/dashboard/:path*`. (Eazo's built-in user system flagged as potential Phase-2 migration if it integrates cleanly.)
 - **AI / LLM:** Anthropic Claude API. Claude 3.5 Sonnet for analyzer + agent runs. Claude Haiku for the cheap dedup similarity judge if cost matters.
 - **Async / background jobs:** Inngest (Eazo-confirmed first-class Next.js support; works natively on Vercel too). Provides event-driven queues, retries, observability — replaces any long-lived Node worker pattern.
 - **Telegram bot:** `grammy` SDK (or raw `fetch` if minimal) — webhook (NOT long-polling) at `/api/telegram`.
@@ -81,8 +81,8 @@ MVP demo flow: user registers in the Sidekick web app (control plane), gets inst
 
 > The *minimum* shape the demo needs by submission. Each `/ship-it` increment moves one of these closer to ✅.
 
-- [ ] User can sign in with Google on the Eazo-deployed web app
-- [ ] Control plane dashboard renders (empty state OK initially): groups list + activity feed + memory view sections
+- ✅ User can sign in with Google on the Eazo-deployed web app — _Vercel (Phase 1): code complete; NextAuth v5 + Google OAuth wired; custom /signin + /signup routes (UX-split, same OAuth flow); JWT sessions; tested locally. Eazo (Phase 2): re-verify after import._
+- ✅ Control plane dashboard renders (empty state OK initially): groups list + activity feed + memory view sections — _three empty-state cards at `/dashboard` (Your groups / Recent activity / Memory), protected by middleware redirect to `/signin` for anonymous users. Data wiring lands when Drizzle increment connects the schema._
 - [ ] "Connect a Telegram group" flow gives copyable instructions + deeplink to `@SidekickBot`
 - [ ] When user adds bot to a real Telegram group, control plane registers the group within ~5s (bot intro message posted to chat)
 - [ ] When user @-mentions `@SidekickBot` in the group with a coordination/planning question, bot posts acknowledgment message ("👀 looking into X…") within ~3s
@@ -147,6 +147,8 @@ Explicitly NOT in MVP. Listed here so the implementor doesn't accidentally scope
 - **NextAuth callback URL:** Google OAuth console needs all callback URLs whitelisted (`http://localhost:3000`, the Vercel URL, and eventually the Eazo URL). Add as you go.
 - **Demo fallback for "where to eat" type questions:** If web search tool not wired by demo time, what's the realism strategy? Options: (a) hardcoded plausible data, (b) LLM-as-knowledge with light prompting, (c) wire a quick Tavily/SerpAPI call. Decide by mid-hackathon.
 - **Eazo `import_project` compatibility with our actual stack versions:** We bootstrapped Next.js 16 + Tailwind v4 + React 19 + shadcn `base-nova` (Base UI), not the Next 14 + Tailwind v3 + shadcn `new-york` originally specced. Both produce App Router + Vercel-serverless builds, but Eazo's reference template was confirmed for Next 14. Verify during the Phase 2 smoke import; downgrade if Eazo's build refuses.
+- **Next 16 `middleware` → `proxy` rename:** Next 16 deprecated the `middleware.ts` file convention in favor of `proxy.ts`. Build emits a cosmetic warning but still works. Rename in a future housekeeping pass; coordinate with any Auth.js middleware export pattern changes.
+- **First-time-user detection for /signup vs /signin:** Both routes call the same Google OAuth flow today (UX split only). When Drizzle lands with a `users` table + Auth.js DB adapter, `/signup` can route new users to `/welcome` (or `/dashboard?welcome=1`), and `/signin` can hard-error if no row exists.
 
 ## Other hard constraints
 

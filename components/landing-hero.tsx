@@ -1,12 +1,11 @@
-import { Button } from "@/components/ui/button"
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip"
+import Link from "next/link"
 
-export function LandingHero() {
+import { auth } from "@/auth"
+import { Button } from "@/components/ui/button"
+
+export async function LandingHero() {
+  const session = await auth()
+
   return (
     <section className="mx-auto w-full max-w-3xl px-6 py-16 md:py-24">
       <div className="flex flex-col items-center text-center">
@@ -17,27 +16,30 @@ export function LandingHero() {
           Sidekick is the AI agent that lives in your Telegram groups — silent
           until you @ it, then quick on polls, plans, and group memory.
         </p>
-        <div className="mt-10">
-          <TooltipProvider delay={150}>
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <span className="inline-block pointer-events-auto">
-                    <Button
-                      disabled
-                      size="lg"
-                      className="h-12 px-6 text-base"
-                    >
-                      Connect a Telegram group
-                    </Button>
-                  </span>
-                }
+        <div className="mt-10 flex flex-col items-center gap-3">
+          {session?.user ? (
+            <Button
+              size="lg"
+              nativeButton={false}
+              className="h-12 px-6 text-base"
+              render={<Link href="/dashboard">Go to dashboard</Link>}
+            />
+          ) : (
+            <>
+              <Button
+                size="lg"
+                nativeButton={false}
+                className="h-12 px-6 text-base"
+                render={<Link href="/signup">Get started</Link>}
               />
-              <TooltipContent>
-                Coming soon — Telegram connection wires up in a later step.
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
+              <Link
+                href="/signin"
+                className="text-sm text-muted-foreground hover:text-foreground"
+              >
+                Already have an account? Sign in
+              </Link>
+            </>
+          )}
         </div>
       </div>
     </section>

@@ -159,7 +159,14 @@ export const agentExecutor = inngest.createFunction(
         const client = getAnthropic();
         const resp = await client.messages.create({
           model: ANTHROPIC_MODEL,
-          max_tokens: 250,
+          max_tokens: 1024,
+          tools: [
+            {
+              type: "web_search_20250305",
+              name: "web_search",
+              max_uses: 5,
+            },
+          ],
           system: buildAgentSystemPrompt(),
           messages: [
             {

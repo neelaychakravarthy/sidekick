@@ -290,34 +290,123 @@ export const analyzer = inngest.createFunction(
 
     // Persist inferred memory facts regardless of decision branch.
     if (decision.inferredFacts.length > 0) {
-      await step.run("persist-inferred-memory", async () => {
-        // Compute embeddings in parallel — falls back to null if no API key / failure
-        const factsWithEmbeddings = await Promise.all(
-          decision.inferredFacts.map(async (f) => {
-            const vec = await embed(`${f.key}: ${f.value}`);
-            return {
-              groupId,
-              key: f.key,
-              value: f.value, // jsonb accepts strings as a JSON value
-              source: "inferred" as const,
-              embedding: vec ? serializeEmbedding(vec) : null,
-            };
-          }),
-        );
+      const memoryChanges = await step.run(
+        "persist-inferred-memory",
+        async () => {
+          // 1. Look up existing facts for these keys so we can diff.
+          const incomingKeys = decision.inferredFacts.map((f) => f.key);
+          const existingRows = await db
+            .select({
+              key: schema.groupMemory.key,
+              value: schema.groupMemory.value,
+            })
+            .from(schema.groupMemory)
+            .where(
+              and(
+                eq(schema.groupMemory.groupId, groupId),
+                inArray(schema.groupMemory.key, incomingKeys),
+              ),
+            );
+          const existingMap = new Map(
+            existingRows.map((r) => [r.key, String(r.value)]),
+          );
 
-        await db
-          .insert(schema.groupMemory)
-          .values(factsWithEmbeddings)
-          .onConflictDoUpdate({
-            target: [schema.groupMemory.groupId, schema.groupMemory.key],
-            set: {
-              value: sql`excluded.value`,
-              source: sql`excluded.source`,
-              embedding: sql`excluded.embedding`,
-              updatedAt: new Date(),
-            },
-          });
-      });
+          // 2. Classify each incoming fact as new / updated / unchanged.
+          const newFacts: Array<{ key: string; value: string }> = [];
+          const updatedFacts: Array<{
+            key: string;
+            oldValue: string;
+            newValue: string;
+          }> = [];
+          for (const f of decision.inferredFacts) {
+            const existing = existingMap.get(f.key);
+            if (existing === undefined) {
+              newFacts.push({ key: f.key, value: f.value });
+            } else if (existing !== f.value) {
+              updatedFacts.push({
+                key: f.key,
+                oldValue: existing,
+                newValue: f.value,
+              });
+            }
+            // else: unchanged duplicate — skip notification
+          }
+
+          // 3. Compute embeddings in parallel — falls back to null if no API key / failure
+          const factsWithEmbeddings = await Promise.all(
+            decision.inferredFacts.map(async (f) => {
+              const vec = await embed(`${f.key}: ${f.value}`);
+              return {
+                groupId,
+                key: f.key,
+                value: f.value, // jsonb accepts strings as a JSON value
+                source: "inferred" as const,
+                embedding: vec ? serializeEmbedding(vec) : null,
+              };
+            }),
+          );
+
+          // 4. Upsert.
+          await db
+            .insert(schema.groupMemory)
+            .values(factsWithEmbeddings)
+            .onConflictDoUpdate({
+              target: [schema.groupMemory.groupId, schema.groupMemory.key],
+              set: {
+                value: sql`excluded.value`,
+                source: sql`excluded.source`,
+                embedding: sql`excluded.embedding`,
+                updatedAt: new Date(),
+              },
+            });
+
+          return { newFacts, updatedFacts };
+        },
+      );
+
+      // 5. Post a notification in the group chat if anything changed.
+      if (
+        memoryChanges.newFacts.length > 0 ||
+        memoryChanges.updatedFacts.length > 0
+      ) {
+        await step.run("notify-memory-stored", async () => {
+          const parts: string[] = [];
+          if (memoryChanges.newFacts.length > 0) {
+            parts.push(
+              `🧠 noted — ${memoryChanges.newFacts.map((f) => f.value).join("; ")}`,
+            );
+          }
+          if (memoryChanges.updatedFacts.length > 0) {
+            parts.push(
+              `📝 updated — ${memoryChanges.updatedFacts
+                .map((f) => `${f.key}: "${f.oldValue}" → "${f.newValue}"`)
+                .join("; ")}`,
+            );
+          }
+          const text = parts.join("\n");
+
+          try {
+            if (group.platform === "telegram" && group.telegramChatId) {
+              await sendMessage({
+                platform: "telegram",
+                telegramChatId: group.telegramChatId,
+                groupId: group.id,
+                text,
+              });
+            } else if (group.platform === "imessage" && group.photonSpaceId) {
+              await sendMessage({
+                platform: "imessage",
+                photonSpaceId: group.photonSpaceId,
+                groupId: group.id,
+                text,
+              });
+            }
+          } catch (err) {
+            console.error("[analyzer] memory notification send failed", err);
+            // Non-fatal — analyzer run completes either way.
+          }
+        });
+      }
 
       await step.run("log-inferred-memory", async () => {
         await logStep(runId, "inferred_memory", {

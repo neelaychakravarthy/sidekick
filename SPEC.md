@@ -20,6 +20,12 @@ MVP demo flow: user registers in the Sidekick web app (control plane), gets inst
   - **Integration depth required:** Final product MUST be built and published via Eazo Creator. Our approach: build core Next.js project locally with Claude Code → push to GitHub → share repo URL in Eazo chat → use Eazo's `import_project` command → Eazo runs build check + ships through standard review/publish flow.
   - **Deployment surface:** Published to Eazo Mobile + public `*.eazo.dev` URL.
   - **Build-tool constraints to honor:** No long-lived Node daemons (Vercel serverless under the hood). All async work via Inngest. Drizzle ORM is Eazo's convention — migrations run at build time via `drizzle-kit`. Use the Eazo Next.js template patterns.
+  - **Status:** ✅ deployed via `import_project`; demo URL live on Eazo.
+
+- **Photon Spectrum** — secondary sponsor; cross-platform messaging SDK adding iMessage parity alongside Telegram.
+  - **Integration depth shipped:** Full bidirectional wiring code-complete. Receive path: `/api/photon` webhook handler with HMAC-SHA256 signature verification per Spectrum spec (v0:{ts}:{rawBody}, timingSafeEqual, 5-min replay window), persists iMessages with `platform="imessage"`, emits same Inngest `message.received` event as Telegram. Send path: `lib/photon/client.ts` lazy-inits the spectrum-ts SDK on each warm serverless container, sends via `app.send(space, text(body))` using a minimal constructed Space (id + __platform + type + phone). Schema gained `platform` pgEnum + `photon_*` columns across groups/messages/group_members. Analyzer + agent-executor are platform-agnostic (route via `lib/messaging.ts`).
+  - **Demo blocker:** awaiting a Photon line (phone number) to be provisioned in the Photon dashboard. Enabling the platform alone doesn't auto-provision a line — gated on a paid tier or sales contact. Until a line lands, iMessage flow is inert at runtime; code is reviewable + deployable.
+  - **Build-tool constraints:** webhook handler ACKs fast (≤6 DB queries + Inngest send, all sub-second). SDK init is lazy + cached on globalThis (no module-load network). Eazo-compatible.
 
 ## Deployment
 
@@ -81,15 +87,15 @@ MVP demo flow: user registers in the Sidekick web app (control plane), gets inst
 
 > The *minimum* shape the demo needs by submission. Each `/ship-it` increment moves one of these closer to ✅.
 
-- ✅ User can sign in with Google on the Eazo-deployed web app — _Vercel (Phase 1): code complete; NextAuth v5 + Google OAuth wired; custom /signin + /signup routes (UX-split, same OAuth flow); JWT sessions; tested locally. Eazo (Phase 2): re-verify after import._
-- ✅ Control plane dashboard renders (empty state OK initially): groups list + activity feed + memory view sections — _three empty-state cards at `/dashboard` (Your groups / Recent activity / Memory), protected by middleware redirect to `/signin` for anonymous users. Data wiring lands when Drizzle increment connects the schema._
-- [ ] "Connect a Telegram group" flow gives copyable instructions + deeplink to `@SidekickBot`
-- [ ] When user adds bot to a real Telegram group, control plane registers the group within ~5s (bot intro message posted to chat)
-- [ ] When user @-mentions `@SidekickBot` in the group with a coordination/planning question, bot posts acknowledgment message ("👀 looking into X…") within ~3s
-- [ ] Bot posts a useful final response (LLM-generated answer) to the chat within ~30s
-- [ ] Control plane updates: activity feed shows the agent run with intent + reasoning; memory view shows any facts the agent stored
-- 🟡 Web app is responsive: looks intentional at iPhone width (~390px, primary) AND remains usable at desktop width (1024px+, secondary) — _partial: landing page (`/`) demonstrates the mobile-first pattern; future routes (sign-in, dashboard) must follow the same pattern._
-- [ ] App is publicly accessible — Phase 1: `https://sidekick-<hash>.vercel.app`; Phase 2: `*.eazo.dev` URL + submitted via Eazo Mobile when platform is live
+- ✅ User can sign in with Google on the Eazo-deployed web app — NextAuth v5 + Google OAuth + Drizzle adapter; custom branded /signin + /signup routes (UX-split, both call signIn("google")); JWT sessions; user/account rows persist; account-delete cascades through all related data.
+- ✅ Control plane dashboard renders (empty state OK initially): groups list + activity feed + memory view sections — `/dashboard` shows live DB-backed counts; click-through hierarchy `/dashboard/groups/[id]` (recent runs + memory + rules) and `/dashboard/groups/[id]/runs/[runId]` (chat-style timeline of trigger → analyzer decision → inferred memory → ack → LLM call → final response).
+- ✅ "Connect a Telegram group" flow gives copyable instructions + deeplink — `/dashboard/connect` issues a short-lived single-use claim token; instructions cover both Telegram (t.me deeplink + `@SidekickBot claim <token>`) and iMessage (Photon line number + `claim <token>`).
+- ✅ When user adds bot to a real group, control plane registers it within ~5s — Telegram `my_chat_member` handler inserts group row + posts SPEC.md verbatim intro message; iMessage webhook self-heals group row on first message. Both link to user via the `claim <token>` command.
+- ✅ Bot posts acknowledgment within ~3s of @-mention — agent-executor's first Inngest step posts "👀 looking into …" via `lib/messaging.ts` (routes to grammy for Telegram, Spectrum SDK for iMessage); ack message id stored on `agent_runs`.
+- ✅ Bot posts a useful final response (Claude Sonnet 4.6) within ~30s — analyzer (LLM decision SILENT/DIRECT_REPLY/EXTEND_RUN/NEW_ACTION) → executor (Claude agent prompt with sliding context window) → posts response, status flips to `responded`. Verified end-to-end in Telegram with multi-paragraph LLM replies.
+- ✅ Control plane updates: activity feed shows the agent run with intent + reasoning; memory view shows facts — per-step `agent_run_steps` table captures every transition with kind+payload+timestamp; run detail page renders chat-style timeline. Memory inference: analyzer emits 0-3 inferred facts per call with speaker attribution ("Neelay is vegetarian", not "i am vegetarian"); explicit `@bot remember X` and `@bot rule: Y` commands work; semantic retrieval via OpenAI text-embedding-3-small replaces dump-all-memory.
+- ✅ Web app is responsive: iPhone width (~390px, primary) AND desktop (1024px+, secondary) — mobile-first Tailwind throughout; tap targets ≥44px on all interactive elements (sanity-passed `/connect`, `/account`, `/groups/[id]`, `/runs/[runId]`).
+- ✅ App is publicly accessible — deployed via Eazo `import_project` to `*.eazo.dev`. (Vercel Phase 1 was skipped; went straight to Eazo.)
 
 ## Required behaviors
 
@@ -140,15 +146,22 @@ Explicitly NOT in MVP. Listed here so the implementor doesn't accidentally scope
 
 > `/ship-it` re-surfaces these before round 2 of relevant increments.
 
-- **When will Eazo Mobile / Eazo Creator be accessible to us?** Drives the Phase 1 → Phase 2 migration plan. Until then, Vercel is the demo URL.
-- **Vercel vs Eazo DB for Phase 2:** Migrate data to Eazo's auto-injected Postgres, or keep Vercel Postgres connection string? Decide when Phase 2 starts.
-- **Eazo `import_project` + Inngest first import:** Eazo confirmed Inngest works, but the first import may surface env-var quirks. Do a smoke import early in Phase 2 rather than right before submission.
-- **Webhook URL bootstrap:** Telegram webhook needs the deployed URL to register. Order: deploy to Vercel → get URL → set webhook → demo. Re-point to Eazo URL in Phase 2.
-- **NextAuth callback URL:** Google OAuth console needs all callback URLs whitelisted (`http://localhost:3000`, the Vercel URL, and eventually the Eazo URL). Add as you go.
-- **Demo fallback for "where to eat" type questions:** If web search tool not wired by demo time, what's the realism strategy? Options: (a) hardcoded plausible data, (b) LLM-as-knowledge with light prompting, (c) wire a quick Tavily/SerpAPI call. Decide by mid-hackathon.
-- **Eazo `import_project` compatibility with our actual stack versions:** We bootstrapped Next.js 16 + Tailwind v4 + React 19 + shadcn `base-nova` (Base UI), not the Next 14 + Tailwind v3 + shadcn `new-york` originally specced. Both produce App Router + Vercel-serverless builds, but Eazo's reference template was confirmed for Next 14. Verify during the Phase 2 smoke import; downgrade if Eazo's build refuses.
-- **Next 16 `middleware` → `proxy` rename:** Next 16 deprecated the `middleware.ts` file convention in favor of `proxy.ts`. Build emits a cosmetic warning but still works. Rename in a future housekeeping pass; coordinate with any Auth.js middleware export pattern changes.
-- **First-time-user detection for /signup vs /signin:** Both routes call the same Google OAuth flow today (UX split only). When Drizzle lands with a `users` table + Auth.js DB adapter, `/signup` can route new users to `/welcome` (or `/dashboard?welcome=1`), and `/signin` can hard-error if no row exists.
+**Resolved (kept here for the demo narrative):**
+
+- ~~When will Eazo Mobile / Eazo Creator be accessible to us?~~ — RESOLVED. Eazo is live; we deployed straight to Eazo via `import_project`. Vercel Phase 1 was skipped entirely.
+- ~~Vercel vs Eazo DB for Phase 2~~ — RESOLVED. Eazo's auto-injected Postgres is used in production. Local dev uses Homebrew Postgres against `localhost:5432/sidekick`.
+- ~~Eazo `import_project` + Inngest first import~~ — RESOLVED. Inngest path works on Eazo with the standard env vars.
+- ~~Webhook URL bootstrap~~ — RESOLVED. Telegram webhook re-pointed to the Eazo URL via setWebhook after deploy.
+- ~~NextAuth callback URL~~ — RESOLVED. Eazo URL added to Google OAuth console whitelist.
+- ~~Eazo `import_project` compatibility with Next 16 + Tailwind v4 + shadcn `base-nova`~~ — RESOLVED. Eazo's build accepted our stack; no downgrade needed.
+- ~~Demo fallback for "where to eat" type questions~~ — RESOLVED. Claude Sonnet 4.6 as knowledge with the agent prompt produces useful answers (verified with a real "Vietnamese in South Bay" query in Telegram); no Tavily/SerpAPI needed for MVP.
+
+**Still open:**
+
+- **Photon line provisioning.** Photon's iMessage integration is wired code-complete (receive via webhook + send via SDK), but enabling the platform in the Photon dashboard doesn't auto-provision a phone line. Needs paid tier or sales contact. Until a line lands, iMessage flow is inert at runtime. Telegram remains the canonical demo channel.
+- **Next 16 `middleware` → `proxy` rename.** Cosmetic warning on every build. Renaming `middleware.ts` → `proxy.ts` and confirming Auth.js still hooks correctly is a future housekeeping pass.
+- **First-time-user detection for /signup vs /signin.** Both routes share the same Google OAuth flow today (UX split only). With users + accounts in the DB, a future increment can branch new vs returning at the post-auth callback and route new users to a `/welcome` flow. Not required for MVP.
+- **Backfill embeddings + group_members for legacy rows.** Memory/message rows that predate the embeddings + speaker-attribution increments fall back gracefully (recency-only retrieval / `user-{id}` display name) — no functional break, just less polished for the older rows.
 
 ## Other hard constraints
 

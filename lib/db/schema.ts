@@ -25,6 +25,8 @@ export const memorySource = pgEnum("memory_source", [
   "user-stated",
 ]);
 
+export const platform = pgEnum("platform", ["telegram", "imessage"]);
+
 // ---------- Tables ----------
 
 export const users = pgTable("users", {
@@ -86,7 +88,13 @@ export const groups = pgTable("groups", {
   id: text("id")
     .primaryKey()
     .$defaultFn(() => crypto.randomUUID()),
-  telegramChatId: text("telegram_chat_id").notNull().unique(),
+  platform: platform("platform").notNull().default("telegram"),
+  // Telegram-only — nullable now to allow iMessage rows. Telegram rows still
+  // populate this; uniqueness is preserved by the unique constraint, which
+  // permits multiple NULLs in Postgres.
+  telegramChatId: text("telegram_chat_id").unique(),
+  // iMessage-only — Photon Spectrum space id.
+  photonSpaceId: text("photon_space_id"),
   registeredByUserId: text("registered_by_user_id").references(
     () => users.id,
     { onDelete: "cascade" },
@@ -113,8 +121,11 @@ export const groupMembers = pgTable(
     groupId: text("group_id")
       .notNull()
       .references(() => groups.id, { onDelete: "cascade" }),
-    telegramUserId: text("telegram_user_id").notNull(),
+    // Telegram-only — nullable so iMessage member rows can coexist.
+    telegramUserId: text("telegram_user_id"),
     telegramUsername: text("telegram_username"),
+    // iMessage-only — Photon sender id (typically a phone number).
+    photonSenderId: text("photon_sender_id"),
     displayName: text("display_name"),
     firstSeenAt: timestamp("first_seen_at", { withTimezone: true })
       .defaultNow()
@@ -141,8 +152,13 @@ export const messages = pgTable(
     groupId: text("group_id")
       .notNull()
       .references(() => groups.id, { onDelete: "cascade" }),
-    telegramMessageId: text("telegram_message_id").notNull(),
+    platform: platform("platform").notNull().default("telegram"),
+    // Telegram-only — nullable so iMessage rows can coexist.
+    telegramMessageId: text("telegram_message_id"),
     telegramUserId: text("telegram_user_id"),
+    // iMessage-only.
+    photonMessageId: text("photon_message_id"),
+    photonSenderId: text("photon_sender_id"),
     text: text("text"),
     ts: timestamp("ts", { withTimezone: true }).notNull(),
     raw: jsonb("raw").$type<Record<string, unknown>>().notNull(),

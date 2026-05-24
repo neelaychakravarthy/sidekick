@@ -25,14 +25,16 @@ export default async function ConnectPage() {
   const botUsername = process.env.TELEGRAM_BOT_USERNAME ?? "Sidekick_The_Bot"
   const deeplink = `https://t.me/${botUsername}?startgroup=true`
   const claimCommand = `@${botUsername} claim ${token}`
+  const photonLineNumber = process.env.PHOTON_LINE_NUMBER ?? "(line not configured)"
+  const imessageClaimCommand = `claim ${token}`
 
   return (
     <div className="container mx-auto max-w-2xl px-4 py-8 md:py-12">
       <h1 className="font-heading mb-2 text-3xl font-semibold tracking-tight">
-        Connect a Telegram group
+        Connect a group
       </h1>
       <p className="mb-10 text-sm text-muted-foreground">
-        Add the bot, then send a claim command in the group.
+        Add Sidekick to a Telegram or iMessage group, then send a claim command.
       </p>
 
       <ol className="space-y-8">
@@ -76,6 +78,21 @@ export default async function ConnectPage() {
               render={<Link href="/dashboard">Back to dashboard</Link>}
             />
           </div>
+        </Step>
+
+        <Step n={4} title="Or: connect via iMessage">
+          <p className="mb-3 text-sm">
+            Add the Sidekick line{" "}
+            <span className="font-mono font-semibold">{photonLineNumber}</span>{" "}
+            to an iMessage group, send any message, then paste the claim
+            command into the group:
+          </p>
+          <pre className="overflow-x-auto rounded-md border bg-muted/50 px-4 py-3 text-sm font-mono">
+            {imessageClaimCommand}
+          </pre>
+          <p className="mt-3 text-xs text-muted-foreground">
+            Same token as above; works for either platform.
+          </p>
         </Step>
       </ol>
     </div>

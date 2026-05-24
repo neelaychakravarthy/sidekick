@@ -4,12 +4,12 @@ import { logStep } from "@/lib/agent-steps";
 import { ANTHROPIC_MODEL, getAnthropic } from "@/lib/anthropic";
 import { db, schema } from "@/lib/db";
 import { inngest } from "@/lib/inngest/client";
+import { sendMessage, type SendArgs } from "@/lib/messaging";
 import { retrieveTopMemories } from "@/lib/memory-retrieval";
 import {
   buildAgentSystemPrompt,
   buildAgentUserPrompt,
 } from "@/lib/prompts/agent";
-import { bot } from "@/lib/telegram/bot";
 
 const CONTEXT_WINDOW_SIZE = 20;
 const CONTEXT_WINDOW_MINUTES = 30;
@@ -110,20 +110,29 @@ export const agentExecutor = inngest.createFunction(
       ts: new Date(m.ts as unknown as string | Date),
     }));
 
-    // Post ack message
+    // Post ack message — route by group platform.
     const ackText = `👀 looking into ${ctx.run.intentSummary ?? "this"}…`;
-    const ack = await step.run("post-ack", async () => {
-      return await bot.api.sendMessage(
-        Number(ctx.group.telegramChatId),
-        ackText,
-      );
+    const ackSendArgs: SendArgs =
+      ctx.group.platform === "imessage"
+        ? {
+            platform: "imessage",
+            photonSpaceId: ctx.group.photonSpaceId ?? "",
+            text: ackText,
+          }
+        : {
+            platform: "telegram",
+            telegramChatId: ctx.group.telegramChatId ?? "",
+            text: ackText,
+          };
+    const ackResult = await step.run("post-ack", async () => {
+      return await sendMessage(ackSendArgs);
     });
 
     await step.run("save-ack-id", async () => {
       await db
         .update(schema.agentRuns)
         .set({
-          ackMessageId: ack.message_id.toString(),
+          ackMessageId: ackResult.externalMessageId,
           updatedAt: new Date(),
         })
         .where(eq(schema.agentRuns.id, runId));
@@ -132,7 +141,7 @@ export const agentExecutor = inngest.createFunction(
     await step.run("log-ack-posted", async () => {
       await logStep(runId, "ack_posted", {
         text: ackText,
-        telegramMessageId: ack.message_id.toString(),
+        telegramMessageId: ackResult.externalMessageId,
       });
     });
 
@@ -193,12 +202,21 @@ export const agentExecutor = inngest.createFunction(
       throw err;
     }
 
-    // Post final response
-    const reply = await step.run("post-response", async () => {
-      return await bot.api.sendMessage(
-        Number(ctx.group.telegramChatId),
-        finalText,
-      );
+    // Post final response — route by group platform.
+    const replySendArgs: SendArgs =
+      ctx.group.platform === "imessage"
+        ? {
+            platform: "imessage",
+            photonSpaceId: ctx.group.photonSpaceId ?? "",
+            text: finalText,
+          }
+        : {
+            platform: "telegram",
+            telegramChatId: ctx.group.telegramChatId ?? "",
+            text: finalText,
+          };
+    const replyResult = await step.run("post-response", async () => {
+      return await sendMessage(replySendArgs);
     });
 
     // Mark responded
@@ -207,7 +225,7 @@ export const agentExecutor = inngest.createFunction(
         .update(schema.agentRuns)
         .set({
           status: "responded",
-          responseMessageId: reply.message_id.toString(),
+          responseMessageId: replyResult.externalMessageId,
           reasoning: finalText,
           respondedAt: new Date(),
           updatedAt: new Date(),
@@ -218,7 +236,7 @@ export const agentExecutor = inngest.createFunction(
     await step.run("log-response-posted", async () => {
       await logStep(runId, "response_posted", {
         text: finalText,
-        telegramMessageId: reply.message_id.toString(),
+        telegramMessageId: replyResult.externalMessageId,
       });
     });
 

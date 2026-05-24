@@ -5,6 +5,7 @@ import { ANTHROPIC_MODEL, getAnthropic } from "@/lib/anthropic";
 import { db, schema } from "@/lib/db";
 import { embed, serializeEmbedding } from "@/lib/embeddings";
 import { inngest } from "@/lib/inngest/client";
+import { sendMessage } from "@/lib/messaging";
 import { retrieveTopMemories } from "@/lib/memory-retrieval";
 import {
   buildAnalyzerSystemPrompt,
@@ -54,12 +55,25 @@ export const analyzer = inngest.createFunction(
   async ({ event, step, logger }) => {
     const { groupId, messageId, text } = event.data;
 
-    // Skip non-@-mention messages early (MVP behavior; proactive intervention is V2).
-    const botUsername = await step.run("resolve-bot-username", () =>
-      resolveBotUsername(),
-    );
-    if (!messageMentionsBot(text, botUsername)) {
-      return { decision: "SILENT", reason: "no_mention" };
+    // Look up the group early — its platform decides whether we run the
+    // Telegram-only mention check. iMessage has no "bot username" concept,
+    // so every message is a potential analyzer trigger; the analyzer's
+    // own SILENT decision filters out noise downstream.
+    const groupForPlatform = await step.run("load-group-platform", async () => {
+      return db.query.groups.findFirst({ where: eq(schema.groups.id, groupId) });
+    });
+    if (!groupForPlatform) {
+      return { decision: "SILENT", reason: "no_group" };
+    }
+
+    if (groupForPlatform.platform === "telegram") {
+      // Skip non-@-mention messages early (MVP behavior; proactive intervention is V2).
+      const botUsername = await step.run("resolve-bot-username", () =>
+        resolveBotUsername(),
+      );
+      if (!messageMentionsBot(text, botUsername)) {
+        return { decision: "SILENT", reason: "no_mention" };
+      }
     }
 
     logger.info("[analyzer] bot @-mentioned", { groupId, messageId });
@@ -223,7 +237,21 @@ export const analyzer = inngest.createFunction(
 
     if (decision.kind === "DIRECT_REPLY") {
       await step.run("post-direct-reply", async () => {
-        await bot.api.sendMessage(Number(group.telegramChatId), decision.text);
+        if (group.platform === "imessage") {
+          if (!group.photonSpaceId) return;
+          await sendMessage({
+            platform: "imessage",
+            photonSpaceId: group.photonSpaceId,
+            text: decision.text,
+          });
+        } else {
+          if (!group.telegramChatId) return;
+          await sendMessage({
+            platform: "telegram",
+            telegramChatId: group.telegramChatId,
+            text: decision.text,
+          });
+        }
       });
       return { decision: "DIRECT_REPLY" };
     }

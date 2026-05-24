@@ -50,7 +50,7 @@ export async function retrieveTopMemories(
 
   if (rows.length === 0) return [];
 
-  const queryVec = await embed(queryText);
+  const queryVec = await embed(queryText, "query");
 
   if (!queryVec) {
     // No semantic ranking possible — recency only.

@@ -1,10 +1,11 @@
 "use server"
 
-import { eq } from "drizzle-orm"
+import { and, eq } from "drizzle-orm"
 import { redirect } from "next/navigation"
 
 import { auth, signOut } from "@/auth"
 import { db, schema } from "@/lib/db"
+import { bot } from "@/lib/telegram/bot"
 
 export async function deleteAccountAction() {
   const session = await auth()
@@ -13,6 +14,28 @@ export async function deleteAccountAction() {
   }
 
   const userId = session.user.id
+
+  // Fetch all Telegram groups this user owns, so we can leave them before
+  // the cascade nukes their telegram_chat_ids.
+  const ownedTelegramGroups = await db
+    .select({ telegramChatId: schema.groups.telegramChatId })
+    .from(schema.groups)
+    .where(
+      and(
+        eq(schema.groups.registeredByUserId, userId),
+        eq(schema.groups.platform, "telegram"),
+      ),
+    )
+
+  for (const g of ownedTelegramGroups) {
+    if (!g.telegramChatId) continue
+    try {
+      await bot.api.leaveChat(Number(g.telegramChatId))
+    } catch (err) {
+      console.error("[deleteAccount] leaveChat failed", g.telegramChatId, err)
+      // Continue — best effort.
+    }
+  }
 
   // Delete the user row.
   // Cascades (via FK ON DELETE CASCADE):

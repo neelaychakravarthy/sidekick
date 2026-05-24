@@ -5,6 +5,7 @@ import { notFound, redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { ActivityRow } from "@/components/activity-row";
 import { AutoReplyToggle } from "@/components/auto-reply-toggle";
+import { DisconnectGroupButton } from "@/components/disconnect-group-button";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -80,6 +81,11 @@ export default async function GroupDetailPage({
           <AutoReplyToggle
             groupId={group.id}
             initialEnabled={group.autoReplyEnabled}
+            platform={group.platform}
+          />
+          <DisconnectGroupButton
+            groupId={group.id}
+            groupName={group.name}
             platform={group.platform}
           />
         </div>

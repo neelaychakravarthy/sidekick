@@ -304,26 +304,21 @@ if (!isCachedBot) {
     if (chatType !== "group" && chatType !== "supergroup") return;
 
     const chatId = ctx.chat.id.toString();
-    let group = await db.query.groups.findFirst({
+    const group = await db.query.groups.findFirst({
       where: eq(schema.groups.telegramChatId, chatId),
     });
     if (!group) {
-      // Self-heal: bot is in a group but we have no row (likely the bot was here
-      // before we started tracking, or the row was deleted via account wipe).
-      // Create one with registeredByUserId=null; user can re-claim from the
-      // dashboard.
-      const chatTitle = "title" in ctx.chat ? ctx.chat.title : "Unnamed group";
-      const inserted = await db
-        .insert(schema.groups)
-        .values({ telegramChatId: chatId, name: chatTitle })
-        .onConflictDoNothing()
-        .returning();
-      group =
-        inserted[0] ??
-        (await db.query.groups.findFirst({
-          where: eq(schema.groups.telegramChatId, chatId),
-        }));
-      if (!group) return; // shouldn't happen but guard anyway
+      // No group row: previously self-healed by creating an orphan row, which
+      // meant a deleted/disconnected group would auto-re-attach on the next
+      // message and keep responding. Instead: leave the chat (best effort) and
+      // ignore. Users must re-add the bot + re-claim from the dashboard to
+      // re-establish the link.
+      try {
+        await bot.api.leaveChat(Number(chatId));
+      } catch (err) {
+        console.error("[bot] leaveChat failed for unowned chat", chatId, err);
+      }
+      return;
     }
 
     await upsertGroupMember(group.id, ctx.from);
@@ -380,23 +375,22 @@ if (!isCachedBot) {
     if (!editedMsg) return;
 
     const chatId = ctx.chat.id.toString();
-    let group = await db.query.groups.findFirst({
+    const group = await db.query.groups.findFirst({
       where: eq(schema.groups.telegramChatId, chatId),
     });
     if (!group) {
-      // Self-heal: same pattern as in bot.on("message").
-      const chatTitle = "title" in ctx.chat ? ctx.chat.title : "Unnamed group";
-      const inserted = await db
-        .insert(schema.groups)
-        .values({ telegramChatId: chatId, name: chatTitle })
-        .onConflictDoNothing()
-        .returning();
-      group =
-        inserted[0] ??
-        (await db.query.groups.findFirst({
-          where: eq(schema.groups.telegramChatId, chatId),
-        }));
-      if (!group) return;
+      // No group row: same rationale as bot.on("message"). Leave the chat
+      // best-effort and ignore.
+      try {
+        await bot.api.leaveChat(Number(chatId));
+      } catch (err) {
+        console.error(
+          "[bot] leaveChat failed for unowned chat (edited)",
+          chatId,
+          err,
+        );
+      }
+      return;
     }
 
     await upsertGroupMember(group.id, ctx.from);

@@ -4,8 +4,10 @@ import {
   AlertCircle,
   Brain,
   Cpu,
+  Globe,
   MessageCircle,
   MessageSquare,
+  Search,
   Sparkles,
   User,
 } from "lucide-react";
@@ -216,6 +218,16 @@ const STEP_CONFIG: Record<
     tone: "bg-indigo-500/15 text-indigo-700 dark:text-indigo-400",
     title: "Agent LLM call",
   },
+  web_search: {
+    icon: <Search className="size-4" />,
+    tone: "bg-cyan-500/15 text-cyan-700 dark:text-cyan-400",
+    title: "Web search",
+  },
+  web_fetch: {
+    icon: <Globe className="size-4" />,
+    tone: "bg-teal-500/15 text-teal-700 dark:text-teal-400",
+    title: "Web fetch",
+  },
   response_posted: {
     icon: <MessageSquare className="size-4" />,
     tone: "bg-green-500/15 text-green-700 dark:text-green-400",
@@ -354,12 +366,6 @@ function StepTimelineRow({
         typeof payload.raw_response === "string"
           ? payload.raw_response
           : "";
-      const toolUses = Array.isArray(payload.tool_uses)
-        ? (payload.tool_uses as Array<{
-            query: string;
-            results: Array<{ title: string; url: string; snippet: string }>;
-          }>)
-        : [];
       body = (
         <div className="text-sm">
           <div className="text-muted-foreground">{model}</div>
@@ -375,43 +381,81 @@ function StepTimelineRow({
           <CollapsibleBlock title="System prompt" content={systemPrompt} />
           <CollapsibleBlock title="User prompt" content={userPrompt} />
           <CollapsibleBlock title="Raw response" content={rawResponse} />
-          {toolUses.length > 0 && (
+        </div>
+      );
+      break;
+    }
+    case "web_search": {
+      const query = String(payload.query ?? "(no query)");
+      const results = Array.isArray(payload.results)
+        ? (payload.results as Array<{
+            title: string;
+            url: string;
+            snippet: string;
+          }>)
+        : [];
+      body = (
+        <div className="text-sm">
+          <div className="font-mono text-xs">
+            <span className="text-muted-foreground">🔍</span> {query}
+          </div>
+          {results.length > 0 ? (
+            <ul className="mt-2 space-y-1.5">
+              {results.map((r, i) => (
+                <li key={i} className="text-xs">
+                  {r.url ? (
+                    <a
+                      href={r.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-blue-600 hover:underline dark:text-blue-400"
+                    >
+                      {r.title}
+                    </a>
+                  ) : (
+                    <span className="font-medium">{r.title}</span>
+                  )}
+                  {r.snippet && (
+                    <p className="mt-0.5 text-muted-foreground line-clamp-2">
+                      {r.snippet}
+                    </p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-1 text-xs text-muted-foreground italic">
+              No results returned
+            </p>
+          )}
+        </div>
+      );
+      break;
+    }
+    case "web_fetch": {
+      const url = String(payload.url ?? "(no url)");
+      const preview = String(payload.content_preview ?? "");
+      body = (
+        <div className="text-sm">
+          <div className="text-xs">
+            <span className="text-muted-foreground">🌐</span>{" "}
+            <a
+              href={url}
+              target="_blank"
+              rel="noreferrer"
+              className="break-all text-blue-600 hover:underline dark:text-blue-400"
+            >
+              {url}
+            </a>
+          </div>
+          {preview && (
             <details className="mt-1 text-xs">
               <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
-                Web searches ({toolUses.length})
+                Content preview
               </summary>
-              <ul className="mt-1 space-y-2">
-                {toolUses.map((t, i) => (
-                  <li key={i} className="rounded bg-muted/40 p-2">
-                    <div className="font-mono text-[10px] text-muted-foreground">
-                      🔍 {t.query}
-                    </div>
-                    <ul className="mt-1 space-y-0.5 text-[10px]">
-                      {t.results.map((r, j) => (
-                        <li key={j} className="truncate">
-                          {r.url ? (
-                            <a
-                              href={r.url}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="text-blue-600 hover:underline dark:text-blue-400"
-                            >
-                              {r.title}
-                            </a>
-                          ) : (
-                            <span>{r.title}</span>
-                          )}
-                          {r.snippet && (
-                            <span className="ml-1 text-muted-foreground">
-                              — {r.snippet.slice(0, 80)}…
-                            </span>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                  </li>
-                ))}
-              </ul>
+              <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded bg-muted/40 p-2 text-[10px] leading-snug">
+                {preview}
+              </pre>
             </details>
           )}
         </div>

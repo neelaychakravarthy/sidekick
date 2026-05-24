@@ -6,6 +6,8 @@ export type StepKind =
   | "inferred_memory"
   | "ack_posted"
   | "agent_llm_call"
+  | "web_search"
+  | "web_fetch"
   | "response_posted"
   | "error";
 

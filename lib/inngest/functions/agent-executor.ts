@@ -151,18 +151,29 @@ export const agentExecutor = inngest.createFunction(
     // Call Claude for the final response.
     // Note: the `log-agent-llm-call` step that previously ran here (with just
     // {model}) has moved to AFTER the LLM call so we can log the full payload
-    // — thinking, prompts, tool uses, raw response — in one row.
+    // — thinking, prompts, raw response, final text — in one row. Per-tool
+    // invocations (web_search / web_fetch) are logged as their own timeline
+    // rows after `log-agent-llm-call`.
+    type ToolCallRecord =
+      | {
+          kind: "web_search";
+          query: string;
+          results: Array<{ title: string; url: string; snippet: string }>;
+        }
+      | {
+          kind: "web_fetch";
+          url: string;
+          content_preview: string;
+          retrieved_at: string | null;
+        };
+
     type AgentLlmResult = {
       finalText: string;
       thinkingText: string;
       systemPrompt: string;
       userPrompt: string;
       rawResponseText: string;
-      toolUses: Array<{
-        name: string;
-        query: string;
-        results: Array<{ title: string; url: string; snippet: string }>;
-      }>;
+      toolCalls: ToolCallRecord[];
     };
 
     let llmResult: AgentLlmResult;
@@ -200,6 +211,11 @@ export const agentExecutor = inngest.createFunction(
               name: "web_search",
               max_uses: 5,
             },
+            {
+              type: "web_fetch_20260309",
+              name: "web_fetch",
+              max_uses: 3,
+            },
           ],
           system: systemPrompt,
           messages: [{ role: "user", content: userPrompt }],
@@ -223,38 +239,100 @@ export const agentExecutor = inngest.createFunction(
           .map((b) => (typeof b.text === "string" ? b.text : ""))
           .join("");
 
-        // Pair server_tool_use with web_search_tool_result by index — the API
-        // returns them in order with matching tool_use_id, so positional pairing
-        // is reliable for our single-tool setup.
-        const serverToolUses = blocks.filter(
-          (b) => b.type === "server_tool_use",
-        );
-        const toolResults = blocks.filter(
-          (b) => b.type === "web_search_tool_result",
-        );
-        const toolUses: AgentLlmResult["toolUses"] = [];
-        for (let i = 0; i < serverToolUses.length; i++) {
-          const use = serverToolUses[i];
-          const result = toolResults[i];
-          const input = (use.input ?? {}) as Record<string, unknown>;
-          const resultContent = result?.content;
-          const resultArr = Array.isArray(resultContent) ? resultContent : [];
-          toolUses.push({
-            name: typeof use.name === "string" ? use.name : "web_search",
-            query: typeof input.query === "string" ? input.query : "",
-            results: resultArr
-              .slice(0, 5)
-              .map((r: Record<string, unknown>) => ({
-                title: typeof r.title === "string" ? r.title : "(no title)",
-                url: typeof r.url === "string" ? r.url : "",
-                snippet:
-                  typeof r.encrypted_content === "string"
-                    ? r.encrypted_content.slice(0, 200)
-                    : typeof r.snippet === "string"
-                      ? r.snippet.slice(0, 200)
-                      : "",
-              })),
-          });
+        // Pair server_tool_use blocks with their corresponding tool_result
+        // blocks by tool_use_id. Don't rely on positional index — Claude may
+        // interleave thinking blocks between the use and the result, and now
+        // that we have two distinct tools (web_search + web_fetch) the result
+        // ordering isn't 1:1 with a single-type filter.
+        const resultsByToolUseId = new Map<string, Record<string, unknown>>();
+        for (const b of blocks) {
+          if (
+            b.type === "web_search_tool_result" ||
+            b.type === "web_fetch_tool_result"
+          ) {
+            const id = typeof b.tool_use_id === "string" ? b.tool_use_id : "";
+            if (id) resultsByToolUseId.set(id, b);
+          }
+        }
+
+        const toolCalls: ToolCallRecord[] = [];
+        for (const b of blocks) {
+          if (b.type !== "server_tool_use") continue;
+          const name = typeof b.name === "string" ? b.name : "";
+          const id = typeof b.id === "string" ? b.id : "";
+          const input = (b.input ?? {}) as Record<string, unknown>;
+          const result = resultsByToolUseId.get(id);
+
+          if (name === "web_search") {
+            const resultContent = result?.content;
+            const resultArr = Array.isArray(resultContent) ? resultContent : [];
+            toolCalls.push({
+              kind: "web_search",
+              query: typeof input.query === "string" ? input.query : "",
+              results: resultArr
+                .slice(0, 8)
+                .map((r: Record<string, unknown>) => ({
+                  title: typeof r.title === "string" ? r.title : "(no title)",
+                  url: typeof r.url === "string" ? r.url : "",
+                  snippet:
+                    typeof r.encrypted_content === "string"
+                      ? r.encrypted_content.slice(0, 300)
+                      : typeof r.snippet === "string"
+                        ? r.snippet.slice(0, 300)
+                        : "",
+                })),
+            });
+          } else if (name === "web_fetch") {
+            // web_fetch_tool_result content shape (per SDK): either a
+            // WebFetchBlock { content: DocumentBlock, retrieved_at, url } or
+            // an error block. Be defensive — the wire shape can vary and we'd
+            // rather store an empty preview than throw.
+            const url = typeof input.url === "string" ? input.url : "";
+            let preview = "";
+            let retrievedAt: string | null = null;
+            const rc = result?.content;
+            if (rc && typeof rc === "object" && !Array.isArray(rc)) {
+              const wrapper = rc as Record<string, unknown>;
+              if (typeof wrapper.retrieved_at === "string") {
+                retrievedAt = wrapper.retrieved_at;
+              }
+              // Nested DocumentBlock case
+              const doc = wrapper.content;
+              if (doc && typeof doc === "object" && !Array.isArray(doc)) {
+                const docObj = doc as Record<string, unknown>;
+                const src = docObj.source as
+                  | Record<string, unknown>
+                  | undefined;
+                if (src && typeof src.data === "string") {
+                  preview = src.data.slice(0, 500);
+                } else if (typeof docObj.text === "string") {
+                  preview = docObj.text.slice(0, 500);
+                }
+              } else if (typeof wrapper.text === "string") {
+                preview = wrapper.text.slice(0, 500);
+              }
+            } else if (typeof rc === "string") {
+              preview = rc.slice(0, 500);
+            } else if (Array.isArray(rc)) {
+              const textBlock = (rc as Array<Record<string, unknown>>).find(
+                (c) => c.type === "text" || c.type === "document",
+              );
+              if (textBlock) {
+                const src = textBlock.source as
+                  | Record<string, unknown>
+                  | undefined;
+                preview = String(
+                  textBlock.text ?? src?.data ?? "",
+                ).slice(0, 500);
+              }
+            }
+            toolCalls.push({
+              kind: "web_fetch",
+              url,
+              content_preview: preview,
+              retrieved_at: retrievedAt,
+            });
+          }
         }
 
         // Flattened raw response for readability in the dashboard.
@@ -268,14 +346,28 @@ export const agentExecutor = inngest.createFunction(
             }
             if (b.type === "server_tool_use") {
               const input = (b.input ?? {}) as Record<string, unknown>;
-              const q =
-                typeof input.query === "string" ? input.query : "";
-              return `[web_search] query="${q}"`;
+              const name = typeof b.name === "string" ? b.name : "tool";
+              if (name === "web_search") {
+                const q =
+                  typeof input.query === "string" ? input.query : "";
+                return `[web_search] query="${q}"`;
+              }
+              if (name === "web_fetch") {
+                const u = typeof input.url === "string" ? input.url : "";
+                return `[web_fetch] url="${u}"`;
+              }
+              return `[${name}]`;
             }
             if (b.type === "web_search_tool_result") {
               const c = b.content;
               const n = Array.isArray(c) ? c.length : 0;
               return `[web_search_result] ${n} results`;
+            }
+            if (b.type === "web_fetch_tool_result") {
+              const c = b.content as Record<string, unknown> | undefined;
+              const u =
+                c && typeof c.url === "string" ? c.url : "";
+              return `[web_fetch_result] ${u}`;
             }
             return `[${String(b.type)}]`;
           })
@@ -287,7 +379,7 @@ export const agentExecutor = inngest.createFunction(
           systemPrompt,
           userPrompt,
           rawResponseText,
-          toolUses,
+          toolCalls,
         };
       });
     } catch (err) {
@@ -310,9 +402,12 @@ export const agentExecutor = inngest.createFunction(
     const finalText = llmResult.finalText;
 
     // Log the LLM call AFTER the call with full payload (thinking, prompts,
-    // raw response, tool uses, final text). Was a bare {model} placeholder
-    // before the call previously; the error handler above covers the failure
-    // path so we don't lose visibility on a failed call.
+    // raw response, final text). Was a bare {model} placeholder before the
+    // call previously; the error handler above covers the failure path so we
+    // don't lose visibility on a failed call. Tool calls (web_search /
+    // web_fetch) are logged as their own timeline rows below instead of
+    // bundled here, so each tool invocation gets its own icon/title/body slot
+    // in the dashboard.
     await step.run("log-agent-llm-call", async () => {
       await logStep(runId, "agent_llm_call", {
         model: ANTHROPIC_MODEL,
@@ -320,10 +415,33 @@ export const agentExecutor = inngest.createFunction(
         system_prompt: llmResult.systemPrompt,
         user_prompt: llmResult.userPrompt,
         raw_response: llmResult.rawResponseText,
-        tool_uses: llmResult.toolUses,
         final_text: llmResult.finalText,
       });
     });
+
+    // Log each tool invocation as its own timeline row. One step.run wraps
+    // the whole loop to avoid spinning up an Inngest step per tool call
+    // (which would balloon checkpoints). Multiple inserts inside one step
+    // is fine. Inserted in resp.content order so the UI's createdAt sort
+    // preserves chronology.
+    if (llmResult.toolCalls.length > 0) {
+      await step.run("log-tool-calls", async () => {
+        for (const tc of llmResult.toolCalls) {
+          if (tc.kind === "web_search") {
+            await logStep(runId, "web_search", {
+              query: tc.query,
+              results: tc.results,
+            });
+          } else {
+            await logStep(runId, "web_fetch", {
+              url: tc.url,
+              content_preview: tc.content_preview,
+              retrieved_at: tc.retrieved_at,
+            });
+          }
+        }
+      });
+    }
 
     // Post final response — route by group platform.
     const replySendArgs: SendArgs =

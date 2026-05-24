@@ -1,15 +1,10 @@
-import { and, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, eq, gt, isNull } from "drizzle-orm";
 import { Bot } from "grammy";
 
 import { db, schema } from "@/lib/db";
-import { embed, serializeEmbedding } from "@/lib/embeddings";
 import { inngest } from "@/lib/inngest/client";
 import { sendMessage } from "@/lib/messaging";
-import {
-  deriveDisplayName,
-  deriveSpeakerSlug,
-  upsertGroupMember,
-} from "@/lib/telegram/members";
+import { deriveDisplayName, upsertGroupMember } from "@/lib/telegram/members";
 
 declare global {
   var __sidekick_bot: Bot | undefined;
@@ -164,25 +159,11 @@ if (!isCachedBot) {
     });
   });
 
-  // Explicit memory commands. Registered AFTER claim and BEFORE the generic
-  // message handler so they intercept their specific commands before the
-  // catch-all message persistence/Inngest emit path runs.
-  const REMEMBER_RE = /(?:@\w+\s+)?\/?remember\s+(.+)/i;
+  // Explicit rule command. Registered AFTER claim and BEFORE the generic
+  // message handler so it intercepts before the catch-all message
+  // persistence/Inngest emit path runs. Memory facts are extracted
+  // semantically by the analyzer — no explicit "remember" command.
   const RULE_RE = /(?:@\w+\s+)?\/?rule:\s*(.+)/i;
-
-  // Helper: derive a snake_case key from a speaker slug + natural-language text
-  function deriveMemoryKey(speakerSlug: string, text: string): string {
-    const tail = text
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, "")
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean)
-      .slice(0, 4)
-      .join("_");
-    const base = `${speakerSlug}_${tail || "fact"}`;
-    return base.slice(0, 40);
-  }
 
   bot.hears(RULE_RE, async (ctx) => {
     const chatType = ctx.chat.type;
@@ -212,58 +193,6 @@ if (!isCachedBot) {
       telegramChatId: chatId,
       groupId: group.id,
       text: `📜 Rule added by ${displayName}: ${ruleText}`,
-    });
-  });
-
-  bot.hears(REMEMBER_RE, async (ctx) => {
-    const chatType = ctx.chat.type;
-    if (chatType !== "group" && chatType !== "supergroup") return;
-
-    const factText = ctx.match[1].trim();
-    if (!factText) return;
-
-    const chatId = ctx.chat.id.toString();
-    const group = await db.query.groups.findFirst({
-      where: eq(schema.groups.telegramChatId, chatId),
-    });
-    if (!group) return;
-
-    await upsertGroupMember(group.id, ctx.from);
-
-    const displayName = deriveDisplayName(ctx.from);
-    const speakerSlug = deriveSpeakerSlug(displayName);
-    const attributedValue = `${displayName}: ${factText}`;
-    const key = deriveMemoryKey(speakerSlug, factText);
-
-    // Compute embedding for semantic retrieval (falls back to null if no API
-    // key / API failure — read path degrades to recency).
-    const vec = await embed(`${key}: ${attributedValue}`);
-    const embeddingStr = vec ? serializeEmbedding(vec) : null;
-
-    await db
-      .insert(schema.groupMemory)
-      .values({
-        groupId: group.id,
-        key,
-        value: attributedValue,
-        source: "user-stated" as const,
-        embedding: embeddingStr,
-      })
-      .onConflictDoUpdate({
-        target: [schema.groupMemory.groupId, schema.groupMemory.key],
-        set: {
-          value: sql`excluded.value`,
-          source: sql`excluded.source`,
-          embedding: sql`excluded.embedding`,
-          updatedAt: new Date(),
-        },
-      });
-
-    await sendMessage({
-      platform: "telegram",
-      telegramChatId: chatId,
-      groupId: group.id,
-      text: `🧠 Noted: ${attributedValue}`,
     });
   });
 

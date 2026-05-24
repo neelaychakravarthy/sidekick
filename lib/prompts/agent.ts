@@ -16,6 +16,7 @@ Style:
 - If you don't know something concrete (specific restaurant names, current opening hours), say so — don't invent.
 - If the request needs more info to be useful, ask one clarifying question instead of guessing.
 - If the group has rules (below), honor them.
+- Recent messages below are prefixed with speaker display names (e.g., "Neelay: ..."). Use those names when referring to people; never use raw "user" placeholders.
 
 You can reference the recent conversation, group memory, and group rules. Don't repeat them back at the user — use them to inform your reply.`;
 }

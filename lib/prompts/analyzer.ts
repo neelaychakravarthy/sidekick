@@ -45,10 +45,16 @@ Decision options:
 - NEW_ACTION: this is a real coordination/planning request that warrants kicking off a new agent run (e.g., "help plan dinner", "make a poll")
 
 Memory extraction (every response, regardless of decision):
-- Scan the recent messages for concrete, durable facts: e.g., "Armeen is vegan" → { key: "armeen_diet", value: "vegan" }; "We agreed to meet at 7pm Friday" → { key: "next_meeting", value: "7pm Friday" }; "Group prefers Vietnamese over Thai" → { key: "cuisine_preference", value: "Vietnamese over Thai" }.
+- Scan the recent messages for concrete, durable facts. ALWAYS attribute facts to the speaker by name when the fact is about a specific person.
+- Examples:
+  * Armeen says "I'm vegan" → { key: "armeen_diet", value: "Armeen is vegan" }
+  * Neelay says "I live in south bay" → { key: "neelay_location", value: "Neelay lives in South Bay" }
+  * Group consensus: "We agreed 7pm Friday" → { key: "next_meeting", value: "7pm Friday" }
+  * Group preference: "We prefer Vietnamese" → { key: "cuisine_preference", value: "group prefers Vietnamese" }
+- Use the display names that appear before each message in the recent-messages list (e.g., "Neelay: ..."), NOT pronouns.
 - 0-3 facts. Quality over quantity. Skip if nothing genuinely new.
-- Keys must be snake_case, lowercase, ≤ 40 chars, stable (so repeated mentions update the same key).
-- Values are short strings (≤ 200 chars).
+- Keys must be snake_case, lowercase, ≤ 40 chars, stable. Prefer name-prefixed keys for person-specific facts.
+- Values are short third-person strings (≤ 200 chars).
 - DO NOT extract greetings, jokes, ephemeral chat, or things already in the provided "Group memory" list above.
 
 CRITICAL: Respond ONLY with valid JSON. No prose before or after. Schema:

@@ -1,4 +1,4 @@
-import { asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 
@@ -43,8 +43,19 @@ export default async function RunDetailPage({
             text: schema.messages.text,
             ts: schema.messages.ts,
             telegramUserId: schema.messages.telegramUserId,
+            displayName: schema.groupMembers.displayName,
           })
           .from(schema.messages)
+          .leftJoin(
+            schema.groupMembers,
+            and(
+              eq(schema.groupMembers.groupId, schema.messages.groupId),
+              eq(
+                schema.groupMembers.telegramUserId,
+                schema.messages.telegramUserId,
+              ),
+            ),
+          )
           .where(inArray(schema.messages.id, run.triggerMessageIds))
           .orderBy(asc(schema.messages.ts))
       : [];
@@ -95,8 +106,11 @@ export default async function RunDetailPage({
             {triggers.map((t) => (
               <div key={t.id} className="text-sm">
                 <div className="text-xs text-muted-foreground">
-                  user {t.telegramUserId ?? "?"} ·{" "}
-                  {new Date(t.ts).toLocaleTimeString()}
+                  {t.displayName ??
+                    (t.telegramUserId
+                      ? `user-${t.telegramUserId}`
+                      : "unknown")}{" "}
+                  · {new Date(t.ts).toLocaleTimeString()}
                 </div>
                 <div className="mt-1 whitespace-pre-wrap">
                   {t.text ?? "(no text)"}

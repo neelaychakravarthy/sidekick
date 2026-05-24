@@ -76,8 +76,19 @@ export const analyzer = inngest.createFunction(
             text: schema.messages.text,
             ts: schema.messages.ts,
             telegramUserId: schema.messages.telegramUserId,
+            displayName: schema.groupMembers.displayName,
           })
           .from(schema.messages)
+          .leftJoin(
+            schema.groupMembers,
+            and(
+              eq(schema.groupMembers.groupId, schema.messages.groupId),
+              eq(
+                schema.groupMembers.telegramUserId,
+                schema.messages.telegramUserId,
+              ),
+            ),
+          )
           .where(
             and(
               eq(schema.messages.groupId, groupId),
@@ -143,7 +154,9 @@ export const analyzer = inngest.createFunction(
         groupName: group.name,
         triggerText: text ?? "",
         contextMessages: contextMessages.map((m) => ({
-          sender: m.telegramUserId ?? "unknown",
+          sender:
+            m.displayName ??
+            (m.telegramUserId ? `user-${m.telegramUserId}` : "unknown"),
           text: m.text ?? "(no text)",
           ts: m.ts,
         })),

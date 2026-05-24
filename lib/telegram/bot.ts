@@ -4,6 +4,11 @@ import { Bot } from "grammy";
 import { db, schema } from "@/lib/db";
 import { embed, serializeEmbedding } from "@/lib/embeddings";
 import { inngest } from "@/lib/inngest/client";
+import {
+  deriveDisplayName,
+  deriveSpeakerSlug,
+  upsertGroupMember,
+} from "@/lib/telegram/members";
 
 declare global {
   var __sidekick_bot: Bot | undefined;
@@ -46,6 +51,14 @@ if (!isCachedBot) {
           // registeredByUserId stays null — Telegram→Sidekick user mapping is future work
         })
         .onConflictDoNothing();
+
+      // Look up the group to get its id, then upsert the adding user as a member
+      const group = await db.query.groups.findFirst({
+        where: eq(schema.groups.telegramChatId, chatId),
+      });
+      if (group) {
+        await upsertGroupMember(group.id, ctx.from);
+      }
 
       // Post intro
       try {
@@ -99,6 +112,8 @@ if (!isCachedBot) {
       return;
     }
 
+    await upsertGroupMember(group.id, ctx.from);
+
     // Look up the user (for the success message)
     const user = await db.query.users.findFirst({
       where: eq(schema.users.id, claim.userId),
@@ -126,18 +141,18 @@ if (!isCachedBot) {
   const REMEMBER_RE = /(?:@\w+\s+)?\/?remember\s+(.+)/i;
   const RULE_RE = /(?:@\w+\s+)?\/?rule:\s*(.+)/i;
 
-  // Helper: derive a snake_case key from natural-language text
-  function deriveMemoryKey(text: string): string {
-    return (
-      text
-        .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, "")
-        .trim()
-        .split(/\s+/)
-        .slice(0, 5)
-        .join("_")
-        .slice(0, 40) || "fact"
-    );
+  // Helper: derive a snake_case key from a speaker slug + natural-language text
+  function deriveMemoryKey(speakerSlug: string, text: string): string {
+    const tail = text
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, "")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 4)
+      .join("_");
+    const base = `${speakerSlug}_${tail || "fact"}`;
+    return base.slice(0, 40);
   }
 
   bot.hears(RULE_RE, async (ctx) => {
@@ -153,13 +168,17 @@ if (!isCachedBot) {
     });
     if (!group) return;
 
+    await upsertGroupMember(group.id, ctx.from);
+
+    const displayName = deriveDisplayName(ctx.from);
+
     await db.insert(schema.groupRules).values({
       groupId: group.id,
       ruleText,
       createdByTelegramUserId: ctx.from?.id?.toString() ?? null,
     });
 
-    await ctx.reply(`📜 Rule added: ${ruleText}`);
+    await ctx.reply(`📜 Rule added by ${displayName}: ${ruleText}`);
   });
 
   bot.hears(REMEMBER_RE, async (ctx) => {
@@ -175,11 +194,16 @@ if (!isCachedBot) {
     });
     if (!group) return;
 
-    const key = deriveMemoryKey(factText);
+    await upsertGroupMember(group.id, ctx.from);
+
+    const displayName = deriveDisplayName(ctx.from);
+    const speakerSlug = deriveSpeakerSlug(displayName);
+    const attributedValue = `${displayName}: ${factText}`;
+    const key = deriveMemoryKey(speakerSlug, factText);
 
     // Compute embedding for semantic retrieval (falls back to null if no API
     // key / API failure — read path degrades to recency).
-    const vec = await embed(`${key}: ${factText}`);
+    const vec = await embed(`${key}: ${attributedValue}`);
     const embeddingStr = vec ? serializeEmbedding(vec) : null;
 
     await db
@@ -187,7 +211,7 @@ if (!isCachedBot) {
       .values({
         groupId: group.id,
         key,
-        value: factText,
+        value: attributedValue,
         source: "user-stated" as const,
         embedding: embeddingStr,
       })
@@ -201,7 +225,7 @@ if (!isCachedBot) {
         },
       });
 
-    await ctx.reply(`🧠 Noted: ${factText}`);
+    await ctx.reply(`🧠 Noted: ${attributedValue}`);
   });
 
   // New message in a group
@@ -218,6 +242,8 @@ if (!isCachedBot) {
       // Skip persistence; future increment can backfill.
       return;
     }
+
+    await upsertGroupMember(group.id, ctx.from);
 
     const inserted = await db
       .insert(schema.messages)
@@ -261,6 +287,8 @@ if (!isCachedBot) {
       where: eq(schema.groups.telegramChatId, chatId),
     });
     if (!group) return;
+
+    await upsertGroupMember(group.id, ctx.from);
 
     await db
       .update(schema.messages)

@@ -223,7 +223,7 @@ export const analyzer = inngest.createFunction(
     }));
 
     // Call Claude for the decision.
-    const decision = await step.run("analyzer-llm", async () => {
+    const llmResult = await step.run("analyzer-llm", async () => {
       const client = getAnthropic();
       const system = buildAnalyzerSystemPrompt();
       const user = buildAnalyzerUserPrompt({
@@ -249,16 +249,42 @@ export const analyzer = inngest.createFunction(
       });
       const resp = await client.messages.create({
         model: ANTHROPIC_MODEL,
-        max_tokens: 1024,
+        // max_tokens bumped from 1024 to leave room for thinking budget + JSON output.
+        max_tokens: 4096,
+        // Extended thinking: surfaces Claude's internal chain-of-thought as
+        // separate `thinking` content blocks. Required temp=1.0 (we don't set
+        // temperature anywhere, default is 1.0).
+        thinking: { type: "enabled", budget_tokens: 2000 },
         system,
         messages: [{ role: "user", content: user }],
       });
+      const thinkingText = resp.content
+        .filter((b: { type: string }) => b.type === "thinking")
+        .map((b: { type: string }) =>
+          (b as unknown as { type: "thinking"; thinking: string }).thinking ??
+          "",
+        )
+        .join("\n\n");
       const rawText = resp.content
-        .filter((b) => b.type === "text")
-        .map((b) => (b as { type: "text"; text: string }).text)
+        .filter((b: { type: string }) => b.type === "text")
+        .map((b: { type: string }) =>
+          (b as unknown as { type: "text"; text: string }).text ?? "",
+        )
         .join("");
-      return parseAnalyzerDecision(rawText);
+      return {
+        decision: parseAnalyzerDecision(rawText),
+        thinkingText,
+        systemPrompt: system,
+        userPrompt: user,
+        rawText,
+      };
     });
+
+    const decision = llmResult.decision;
+    const thinkingText = llmResult.thinkingText;
+    const analyzerSystemPrompt = llmResult.systemPrompt;
+    const analyzerUserPrompt = llmResult.userPrompt;
+    const analyzerRawText = llmResult.rawText;
 
     logger.info("[analyzer] decision", { decision: decision.kind, groupId });
 
@@ -300,6 +326,14 @@ export const analyzer = inngest.createFunction(
       });
     }
 
+    // Reasoning for the activity-row display. Prefer the actual thinking text
+    // (truncated for the column) so SILENT rows are informative instead of a
+    // generic placeholder. Empty-thinking fallback keeps the column readable.
+    const silentReasoning =
+      thinkingText.length > 0
+        ? thinkingText.slice(0, 500)
+        : "model returned SILENT";
+
     // Act on the decision.
     if (decision.kind === "SILENT") {
       await step.run("mark-silent-llm", async () => {
@@ -308,7 +342,7 @@ export const analyzer = inngest.createFunction(
           .set({
             status: "responded",
             decision: "silent",
-            reasoning: "model returned SILENT",
+            reasoning: silentReasoning,
             respondedAt: new Date(),
             updatedAt: new Date(),
           })
@@ -317,6 +351,10 @@ export const analyzer = inngest.createFunction(
       await step.run("log-analyzer-decision-silent", async () => {
         await logStep(runId, "analyzer_decision", {
           decision: "SILENT",
+          thinking: thinkingText,
+          system_prompt: analyzerSystemPrompt,
+          user_prompt: analyzerUserPrompt,
+          raw_response: analyzerRawText,
         });
       });
       return { decision: "SILENT", reason: "llm", runId };
@@ -359,6 +397,10 @@ export const analyzer = inngest.createFunction(
         await logStep(runId, "analyzer_decision", {
           decision: "DIRECT_REPLY",
           text: decision.text,
+          thinking: thinkingText,
+          system_prompt: analyzerSystemPrompt,
+          user_prompt: analyzerUserPrompt,
+          raw_response: analyzerRawText,
         });
       });
       return { decision: "DIRECT_REPLY", runId };
@@ -399,6 +441,10 @@ export const analyzer = inngest.createFunction(
           extends_run_id: decision.extendsRunId,
           intent_summary: decision.intentSummary,
           intent_keywords: decision.intentKeywords,
+          thinking: thinkingText,
+          system_prompt: analyzerSystemPrompt,
+          user_prompt: analyzerUserPrompt,
+          raw_response: analyzerRawText,
         });
       });
       await step.run("log-trigger-on-target", async () => {
@@ -413,6 +459,10 @@ export const analyzer = inngest.createFunction(
           decision: "EXTEND_RUN",
           intent_summary: decision.intentSummary,
           intent_keywords: decision.intentKeywords,
+          thinking: thinkingText,
+          system_prompt: analyzerSystemPrompt,
+          user_prompt: analyzerUserPrompt,
+          raw_response: analyzerRawText,
         });
       });
       // Re-emit agent.run-requested so the executor picks up the extended context
@@ -452,6 +502,10 @@ export const analyzer = inngest.createFunction(
         decision: decision.kind,
         intent_summary: decision.intentSummary,
         intent_keywords: decision.intentKeywords,
+        thinking: thinkingText,
+        system_prompt: analyzerSystemPrompt,
+        user_prompt: analyzerUserPrompt,
+        raw_response: analyzerRawText,
       });
     });
 

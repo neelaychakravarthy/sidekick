@@ -167,6 +167,26 @@ function TimelineRow({
   );
 }
 
+function CollapsibleBlock({
+  title,
+  content,
+}: {
+  title: string;
+  content: string;
+}) {
+  if (!content) return null;
+  return (
+    <details className="mt-1 text-xs">
+      <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+        {title}
+      </summary>
+      <pre className="mt-1 max-h-80 overflow-auto whitespace-pre-wrap rounded bg-muted/40 p-2 text-[10px] leading-snug">
+        {content}
+      </pre>
+    </details>
+  );
+}
+
 const STEP_CONFIG: Record<
   string,
   { icon: React.ReactNode; tone: string; title: string }
@@ -243,6 +263,18 @@ function StepTimelineRow({
       const kw = Array.isArray(payload.intent_keywords)
         ? (payload.intent_keywords as string[])
         : [];
+      const thinking =
+        typeof payload.thinking === "string" ? payload.thinking : "";
+      const systemPrompt =
+        typeof payload.system_prompt === "string"
+          ? payload.system_prompt
+          : "";
+      const userPrompt =
+        typeof payload.user_prompt === "string" ? payload.user_prompt : "";
+      const rawResponse =
+        typeof payload.raw_response === "string"
+          ? payload.raw_response
+          : "";
       body = (
         <div className="text-sm">
           <div>
@@ -259,6 +291,13 @@ function StepTimelineRow({
               {kw.join(" · ")}
             </div>
           )}
+          <CollapsibleBlock
+            title="Reasoning (Claude's chain-of-thought)"
+            content={thinking}
+          />
+          <CollapsibleBlock title="System prompt" content={systemPrompt} />
+          <CollapsibleBlock title="User prompt" content={userPrompt} />
+          <CollapsibleBlock title="Raw response" content={rawResponse} />
         </div>
       );
       break;
@@ -296,17 +335,83 @@ function StepTimelineRow({
       break;
     }
     case "agent_llm_call": {
+      const model = String(payload.model ?? "claude");
+      const finalTextPayload =
+        typeof payload.final_text === "string" ? payload.final_text : "";
+      // Prefer the per-step final_text (logged by post-call) so we don't
+      // depend on the run-level reasoning column for the inline preview.
+      const previewSource = finalTextPayload || runReasoning || "";
+      const preview = previewSource.slice(0, 200);
+      const thinking =
+        typeof payload.thinking === "string" ? payload.thinking : "";
+      const systemPrompt =
+        typeof payload.system_prompt === "string"
+          ? payload.system_prompt
+          : "";
+      const userPrompt =
+        typeof payload.user_prompt === "string" ? payload.user_prompt : "";
+      const rawResponse =
+        typeof payload.raw_response === "string"
+          ? payload.raw_response
+          : "";
+      const toolUses = Array.isArray(payload.tool_uses)
+        ? (payload.tool_uses as Array<{
+            query: string;
+            results: Array<{ title: string; url: string; snippet: string }>;
+          }>)
+        : [];
       body = (
-        <div className="text-sm text-muted-foreground">
-          <div>{String(payload.model ?? "claude")} · generating response…</div>
-          {runReasoning && (
-            <details className="mt-2">
-              <summary className="cursor-pointer text-xs hover:text-foreground">
-                Show final response
+        <div className="text-sm">
+          <div className="text-muted-foreground">{model}</div>
+          {preview && (
+            <div className="mt-1 whitespace-pre-wrap text-foreground">
+              {preview}
+            </div>
+          )}
+          <CollapsibleBlock
+            title="Reasoning (Claude's chain-of-thought)"
+            content={thinking}
+          />
+          <CollapsibleBlock title="System prompt" content={systemPrompt} />
+          <CollapsibleBlock title="User prompt" content={userPrompt} />
+          <CollapsibleBlock title="Raw response" content={rawResponse} />
+          {toolUses.length > 0 && (
+            <details className="mt-1 text-xs">
+              <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+                Web searches ({toolUses.length})
               </summary>
-              <div className="mt-2 whitespace-pre-wrap text-sm text-foreground">
-                {runReasoning}
-              </div>
+              <ul className="mt-1 space-y-2">
+                {toolUses.map((t, i) => (
+                  <li key={i} className="rounded bg-muted/40 p-2">
+                    <div className="font-mono text-[10px] text-muted-foreground">
+                      🔍 {t.query}
+                    </div>
+                    <ul className="mt-1 space-y-0.5 text-[10px]">
+                      {t.results.map((r, j) => (
+                        <li key={j} className="truncate">
+                          {r.url ? (
+                            <a
+                              href={r.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-blue-600 hover:underline dark:text-blue-400"
+                            >
+                              {r.title}
+                            </a>
+                          ) : (
+                            <span>{r.title}</span>
+                          )}
+                          {r.snippet && (
+                            <span className="ml-1 text-muted-foreground">
+                              — {r.snippet.slice(0, 80)}…
+                            </span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </li>
+                ))}
+              </ul>
             </details>
           )}
         </div>

@@ -148,18 +148,52 @@ export const agentExecutor = inngest.createFunction(
       });
     });
 
-    // Call Claude for the final response
-    await step.run("log-agent-llm-call", async () => {
-      await logStep(runId, "agent_llm_call", { model: ANTHROPIC_MODEL });
-    });
+    // Call Claude for the final response.
+    // Note: the `log-agent-llm-call` step that previously ran here (with just
+    // {model}) has moved to AFTER the LLM call so we can log the full payload
+    // — thinking, prompts, tool uses, raw response — in one row.
+    type AgentLlmResult = {
+      finalText: string;
+      thinkingText: string;
+      systemPrompt: string;
+      userPrompt: string;
+      rawResponseText: string;
+      toolUses: Array<{
+        name: string;
+        query: string;
+        results: Array<{ title: string; url: string; snippet: string }>;
+      }>;
+    };
 
-    let finalText: string;
+    let llmResult: AgentLlmResult;
     try {
-      finalText = await step.run("agent-llm", async () => {
+      llmResult = await step.run("agent-llm", async () => {
         const client = getAnthropic();
+        const systemPrompt = buildAgentSystemPrompt();
+        const userPrompt = buildAgentUserPrompt({
+          groupName: ctx.group.name,
+          triggerText: ctx.triggerText,
+          intentSummary: ctx.run.intentSummary ?? "",
+          contextMessages: contextMessages.map((m) => ({
+            sender:
+              m.displayName ??
+              (m.telegramUserId ? `user-${m.telegramUserId}` : "unknown"),
+            text: m.text ?? "(no text)",
+            ts: m.ts,
+            isBot: m.isBot,
+          })),
+          groupMemory: mem,
+          groupRules: ctx.rules,
+        });
         const resp = await client.messages.create({
           model: ANTHROPIC_MODEL,
-          max_tokens: 1024,
+          // max_tokens bumped from 1024 to leave room for thinking budget
+          // + tool-use cycles + final text. 8192 - 5000 = 3192 for output.
+          max_tokens: 8192,
+          // Extended thinking: surfaces Claude's internal chain-of-thought
+          // as separate `thinking` content blocks; interleaves naturally with
+          // server-side tool use. Required temp=1.0 (we don't set temperature).
+          thinking: { type: "enabled", budget_tokens: 5000 },
           tools: [
             {
               type: "web_search_20250305",
@@ -167,34 +201,94 @@ export const agentExecutor = inngest.createFunction(
               max_uses: 5,
             },
           ],
-          system: buildAgentSystemPrompt(),
-          messages: [
-            {
-              role: "user",
-              content: buildAgentUserPrompt({
-                groupName: ctx.group.name,
-                triggerText: ctx.triggerText,
-                intentSummary: ctx.run.intentSummary ?? "",
-                contextMessages: contextMessages.map((m) => ({
-                  sender:
-                    m.displayName ??
-                    (m.telegramUserId
-                      ? `user-${m.telegramUserId}`
-                      : "unknown"),
-                  text: m.text ?? "(no text)",
-                  ts: m.ts,
-                  isBot: m.isBot,
-                })),
-                groupMemory: mem,
-                groupRules: ctx.rules,
-              }),
-            },
-          ],
+          system: systemPrompt,
+          messages: [{ role: "user", content: userPrompt }],
         });
-        return resp.content
+
+        // Cast each block through `unknown` to a permissive shape — the SDK's
+        // typed ContentBlock union is precise but verbose; we just read fields.
+        const blocks = resp.content as unknown as Array<
+          Record<string, unknown>
+        >;
+
+        // Thinking blocks may appear multiple times when thinking continues
+        // after tool results. Separator makes the distinct sections readable.
+        const thinkingText = blocks
+          .filter((b) => b.type === "thinking")
+          .map((b) => (typeof b.thinking === "string" ? b.thinking : ""))
+          .join("\n\n---\n\n");
+
+        const finalText = blocks
           .filter((b) => b.type === "text")
-          .map((b) => (b as { type: "text"; text: string }).text)
+          .map((b) => (typeof b.text === "string" ? b.text : ""))
           .join("");
+
+        // Pair server_tool_use with web_search_tool_result by index — the API
+        // returns them in order with matching tool_use_id, so positional pairing
+        // is reliable for our single-tool setup.
+        const serverToolUses = blocks.filter(
+          (b) => b.type === "server_tool_use",
+        );
+        const toolResults = blocks.filter(
+          (b) => b.type === "web_search_tool_result",
+        );
+        const toolUses: AgentLlmResult["toolUses"] = [];
+        for (let i = 0; i < serverToolUses.length; i++) {
+          const use = serverToolUses[i];
+          const result = toolResults[i];
+          const input = (use.input ?? {}) as Record<string, unknown>;
+          const resultContent = result?.content;
+          const resultArr = Array.isArray(resultContent) ? resultContent : [];
+          toolUses.push({
+            name: typeof use.name === "string" ? use.name : "web_search",
+            query: typeof input.query === "string" ? input.query : "",
+            results: resultArr
+              .slice(0, 5)
+              .map((r: Record<string, unknown>) => ({
+                title: typeof r.title === "string" ? r.title : "(no title)",
+                url: typeof r.url === "string" ? r.url : "",
+                snippet:
+                  typeof r.encrypted_content === "string"
+                    ? r.encrypted_content.slice(0, 200)
+                    : typeof r.snippet === "string"
+                      ? r.snippet.slice(0, 200)
+                      : "",
+              })),
+          });
+        }
+
+        // Flattened raw response for readability in the dashboard.
+        const rawResponseText = blocks
+          .map((b) => {
+            if (b.type === "thinking") {
+              return `[thinking]\n${typeof b.thinking === "string" ? b.thinking : ""}`;
+            }
+            if (b.type === "text") {
+              return `[text]\n${typeof b.text === "string" ? b.text : ""}`;
+            }
+            if (b.type === "server_tool_use") {
+              const input = (b.input ?? {}) as Record<string, unknown>;
+              const q =
+                typeof input.query === "string" ? input.query : "";
+              return `[web_search] query="${q}"`;
+            }
+            if (b.type === "web_search_tool_result") {
+              const c = b.content;
+              const n = Array.isArray(c) ? c.length : 0;
+              return `[web_search_result] ${n} results`;
+            }
+            return `[${String(b.type)}]`;
+          })
+          .join("\n\n");
+
+        return {
+          finalText,
+          thinkingText,
+          systemPrompt,
+          userPrompt,
+          rawResponseText,
+          toolUses,
+        };
       });
     } catch (err) {
       logger.error("[agent-executor] LLM call failed", { runId, err });
@@ -212,6 +306,24 @@ export const agentExecutor = inngest.createFunction(
       });
       throw err;
     }
+
+    const finalText = llmResult.finalText;
+
+    // Log the LLM call AFTER the call with full payload (thinking, prompts,
+    // raw response, tool uses, final text). Was a bare {model} placeholder
+    // before the call previously; the error handler above covers the failure
+    // path so we don't lose visibility on a failed call.
+    await step.run("log-agent-llm-call", async () => {
+      await logStep(runId, "agent_llm_call", {
+        model: ANTHROPIC_MODEL,
+        thinking: llmResult.thinkingText,
+        system_prompt: llmResult.systemPrompt,
+        user_prompt: llmResult.userPrompt,
+        raw_response: llmResult.rawResponseText,
+        tool_uses: llmResult.toolUses,
+        final_text: llmResult.finalText,
+      });
+    });
 
     // Post final response — route by group platform.
     const replySendArgs: SendArgs =

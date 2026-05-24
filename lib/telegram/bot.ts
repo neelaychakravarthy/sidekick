@@ -2,6 +2,7 @@ import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import { Bot } from "grammy";
 
 import { db, schema } from "@/lib/db";
+import { embed, serializeEmbedding } from "@/lib/embeddings";
 import { inngest } from "@/lib/inngest/client";
 
 declare global {
@@ -176,6 +177,11 @@ if (!isCachedBot) {
 
     const key = deriveMemoryKey(factText);
 
+    // Compute embedding for semantic retrieval (falls back to null if no API
+    // key / API failure — read path degrades to recency).
+    const vec = await embed(`${key}: ${factText}`);
+    const embeddingStr = vec ? serializeEmbedding(vec) : null;
+
     await db
       .insert(schema.groupMemory)
       .values({
@@ -183,12 +189,14 @@ if (!isCachedBot) {
         key,
         value: factText,
         source: "user-stated" as const,
+        embedding: embeddingStr,
       })
       .onConflictDoUpdate({
         target: [schema.groupMemory.groupId, schema.groupMemory.key],
         set: {
           value: sql`excluded.value`,
           source: sql`excluded.source`,
+          embedding: sql`excluded.embedding`,
           updatedAt: new Date(),
         },
       });

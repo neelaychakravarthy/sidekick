@@ -4,6 +4,7 @@ import { logStep } from "@/lib/agent-steps";
 import { ANTHROPIC_MODEL, getAnthropic } from "@/lib/anthropic";
 import { db, schema } from "@/lib/db";
 import { inngest } from "@/lib/inngest/client";
+import { retrieveTopMemories } from "@/lib/memory-retrieval";
 import {
   buildAgentSystemPrompt,
   buildAgentUserPrompt,
@@ -44,7 +45,7 @@ export const agentExecutor = inngest.createFunction(
       if (!run || !group) {
         throw new Error(`agentRun=${runId} or group=${groupId} not found`);
       }
-      const [contextMessages, triggers, mem, rules] = await Promise.all([
+      const [contextMessages, triggers, rules] = await Promise.all([
         db
           .select({
             text: schema.messages.text,
@@ -67,15 +68,6 @@ export const agentExecutor = inngest.createFunction(
               .where(inArray(schema.messages.id, run.triggerMessageIds))
           : Promise.resolve([] as { text: string | null }[]),
         db
-          .select({
-            key: schema.groupMemory.key,
-            value: schema.groupMemory.value,
-            source: schema.groupMemory.source,
-          })
-          .from(schema.groupMemory)
-          .where(eq(schema.groupMemory.groupId, groupId))
-          .limit(50),
-        db
           .select({ ruleText: schema.groupRules.ruleText })
           .from(schema.groupRules)
           .where(eq(schema.groupRules.groupId, groupId))
@@ -90,9 +82,15 @@ export const agentExecutor = inngest.createFunction(
         group,
         contextMessages: contextMessages.reverse(),
         triggerText,
-        mem,
         rules,
       };
+    });
+
+    // Semantic memory retrieval — top-K cosine-ranked by trigger text, with
+    // recency fallback when embeddings aren't available. Sequenced after
+    // load-run-context so we have triggerText.
+    const mem = await step.run("retrieve-memory", async () => {
+      return retrieveTopMemories(groupId, ctx.triggerText, 10);
     });
 
     // Re-hydrate Date fields after Inngest step serialization (Dates become ISO strings).
@@ -152,7 +150,7 @@ export const agentExecutor = inngest.createFunction(
                   text: m.text ?? "(no text)",
                   ts: m.ts,
                 })),
-                groupMemory: ctx.mem,
+                groupMemory: mem,
                 groupRules: ctx.rules,
               }),
             },

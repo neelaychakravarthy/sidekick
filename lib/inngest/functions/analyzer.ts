@@ -3,7 +3,9 @@ import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { logStep } from "@/lib/agent-steps";
 import { ANTHROPIC_MODEL, getAnthropic } from "@/lib/anthropic";
 import { db, schema } from "@/lib/db";
+import { embed, serializeEmbedding } from "@/lib/embeddings";
 import { inngest } from "@/lib/inngest/client";
+import { retrieveTopMemories } from "@/lib/memory-retrieval";
 import {
   buildAnalyzerSystemPrompt,
   buildAnalyzerUserPrompt,
@@ -66,7 +68,7 @@ export const analyzer = inngest.createFunction(
     const cutoff = new Date(Date.now() - CONTEXT_WINDOW_MINUTES * 60_000);
 
     const loaded = await step.run("load-context", async () => {
-      const [grp, msgs, runs, mem, rules] = await Promise.all([
+      const [grp, msgs, runs, rules] = await Promise.all([
         db.query.groups.findFirst({ where: eq(schema.groups.id, groupId) }),
         db
           .select({
@@ -101,15 +103,6 @@ export const analyzer = inngest.createFunction(
           .orderBy(desc(schema.agentRuns.createdAt))
           .limit(5),
         db
-          .select({
-            key: schema.groupMemory.key,
-            value: schema.groupMemory.value,
-            source: schema.groupMemory.source,
-          })
-          .from(schema.groupMemory)
-          .where(eq(schema.groupMemory.groupId, groupId))
-          .limit(50),
-        db
           .select({ ruleText: schema.groupRules.ruleText })
           .from(schema.groupRules)
           .where(eq(schema.groupRules.groupId, groupId))
@@ -119,7 +112,6 @@ export const analyzer = inngest.createFunction(
         group: grp,
         contextMessages: msgs.reverse(),
         activeRuns: runs,
-        groupMemory: mem,
         groupRules: rules,
       };
     });
@@ -129,6 +121,13 @@ export const analyzer = inngest.createFunction(
       logger.warn("[analyzer] group not found, skipping", { groupId });
       return { decision: "SILENT", reason: "no_group" };
     }
+
+    // Semantic memory retrieval — top-K cosine-ranked by trigger text, with
+    // recency fallback when embeddings aren't available. Run as a separate
+    // step so the embedding API call gets Inngest retry semantics.
+    const groupMemory = await step.run("retrieve-memory", async () => {
+      return retrieveTopMemories(groupId, text ?? "", 8);
+    });
 
     // Re-hydrate Date fields after Inngest step serialization (Dates become ISO strings).
     const contextMessages = loaded.contextMessages.map((m) => ({
@@ -154,7 +153,7 @@ export const analyzer = inngest.createFunction(
           intentKeywords: r.intentKeywords,
           status: r.status,
         })),
-        groupMemory: loaded.groupMemory,
+        groupMemory,
         groupRules: loaded.groupRules,
       });
       const resp = await client.messages.create({
@@ -175,21 +174,29 @@ export const analyzer = inngest.createFunction(
     // Persist inferred memory facts regardless of decision branch.
     if (decision.inferredFacts.length > 0) {
       await step.run("persist-inferred-memory", async () => {
-        await db
-          .insert(schema.groupMemory)
-          .values(
-            decision.inferredFacts.map((f) => ({
+        // Compute embeddings in parallel — falls back to null if no API key / failure
+        const factsWithEmbeddings = await Promise.all(
+          decision.inferredFacts.map(async (f) => {
+            const vec = await embed(`${f.key}: ${f.value}`);
+            return {
               groupId,
               key: f.key,
               value: f.value, // jsonb accepts strings as a JSON value
               source: "inferred" as const,
-            })),
-          )
+              embedding: vec ? serializeEmbedding(vec) : null,
+            };
+          }),
+        );
+
+        await db
+          .insert(schema.groupMemory)
+          .values(factsWithEmbeddings)
           .onConflictDoUpdate({
             target: [schema.groupMemory.groupId, schema.groupMemory.key],
             set: {
               value: sql`excluded.value`,
               source: sql`excluded.source`,
+              embedding: sql`excluded.embedding`,
               updatedAt: new Date(),
             },
           });

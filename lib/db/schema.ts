@@ -213,6 +213,7 @@ export const groupMemory = pgTable(
     key: text("key").notNull(),
     value: jsonb("value").$type<unknown>().notNull(),
     source: memorySource("source").notNull(),
+    embedding: text("embedding"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),

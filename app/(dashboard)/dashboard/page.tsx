@@ -3,6 +3,7 @@ import { Activity, Brain, Users } from "lucide-react"
 import Link from "next/link"
 
 import { auth } from "@/auth"
+import { ActivityRow } from "@/components/activity-row"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -35,6 +36,8 @@ export default async function DashboardPage() {
         id: schema.agentRuns.id,
         intentSummary: schema.agentRuns.intentSummary,
         status: schema.agentRuns.status,
+        decision: schema.agentRuns.decision,
+        errorText: schema.agentRuns.errorText,
         createdAt: schema.agentRuns.createdAt,
         groupId: schema.agentRuns.groupId,
         groupName: schema.groups.name,
@@ -137,20 +140,18 @@ export default async function DashboardPage() {
         </CardHeader>
         {recentRuns.length > 0 && (
           <CardContent className="px-0">
-            <ul className="space-y-2 text-sm">
+            <ul className="divide-y divide-border">
               {recentRuns.map((r) => (
                 <li key={r.id}>
-                  <Link
+                  <ActivityRow
                     href={`/dashboard/groups/${r.groupId}/runs/${r.id}`}
-                    className="-mx-3 block rounded-md px-3 py-1.5 hover:bg-muted/60"
-                  >
-                    <div className="font-medium">
-                      {r.intentSummary ?? "(no summary)"}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      {r.groupName} · {r.status}
-                    </div>
-                  </Link>
+                    intent={r.intentSummary}
+                    decision={r.decision}
+                    status={r.status}
+                    errorText={r.errorText ?? null}
+                    timestamp={new Date(r.createdAt)}
+                    groupName={r.groupName}
+                  />
                 </li>
               ))}
             </ul>

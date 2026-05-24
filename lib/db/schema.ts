@@ -106,6 +106,7 @@ export const groups = pgTable("groups", {
     .$type<Record<string, unknown>>()
     .notNull()
     .default({}),
+  autoReplyEnabled: boolean("auto_reply_enabled").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()
     .notNull(),

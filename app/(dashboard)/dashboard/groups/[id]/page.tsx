@@ -3,6 +3,8 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 
 import { auth } from "@/auth";
+import { ActivityRow } from "@/components/activity-row";
+import { AutoReplyToggle } from "@/components/auto-reply-toggle";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -41,6 +43,7 @@ export default async function GroupDetailPage({
         id: schema.agentRuns.id,
         status: schema.agentRuns.status,
         intentSummary: schema.agentRuns.intentSummary,
+        decision: schema.agentRuns.decision,
         createdAt: schema.agentRuns.createdAt,
         respondedAt: schema.agentRuns.respondedAt,
         errorText: schema.agentRuns.errorText,
@@ -63,22 +66,27 @@ export default async function GroupDetailPage({
 
   return (
     <div className="container mx-auto max-w-4xl px-4 py-8 md:py-12">
-      <div className="mb-6 flex items-center justify-between">
-        <div>
-          <Button
-            variant="ghost"
-            nativeButton={false}
-            className="h-11 -ml-3"
-            render={<Link href="/dashboard">← Dashboard</Link>}
-          />
-          <h1 className="font-heading mt-1 text-3xl font-semibold tracking-tight">
+      <div className="mb-6">
+        <Button
+          variant="ghost"
+          nativeButton={false}
+          className="h-11 -ml-3"
+          render={<Link href="/dashboard">← Dashboard</Link>}
+        />
+        <div className="mt-1 flex flex-wrap items-center gap-3">
+          <h1 className="font-heading text-3xl font-semibold tracking-tight">
             {group.name}
           </h1>
-          <p className="text-sm text-muted-foreground">
-            Telegram chat ID: {group.telegramChatId} · Connected{" "}
-            {new Date(group.createdAt).toLocaleDateString()}
-          </p>
+          <AutoReplyToggle
+            groupId={group.id}
+            initialEnabled={group.autoReplyEnabled}
+            platform={group.platform}
+          />
         </div>
+        <p className="mt-1 text-sm text-muted-foreground">
+          {group.platform === "imessage" ? "iMessage space" : "Telegram chat"} ·
+          Connected {new Date(group.createdAt).toLocaleDateString()}
+        </p>
       </div>
 
       <Card className="mb-6">
@@ -92,23 +100,17 @@ export default async function GroupDetailPage({
         </CardHeader>
         <CardContent>
           {runs.length > 0 && (
-            <ul className="space-y-2">
+            <ul className="divide-y divide-border">
               {runs.map((r) => (
                 <li key={r.id}>
-                  <Link
+                  <ActivityRow
                     href={`/dashboard/groups/${id}/runs/${r.id}`}
-                    className="-mx-3 flex items-start justify-between gap-3 rounded-md px-3 py-2 text-sm hover:bg-muted/60"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate font-medium">
-                        {r.intentSummary ?? "(no summary)"}
-                      </div>
-                      <div className="text-xs text-muted-foreground">
-                        {new Date(r.createdAt).toLocaleString()}
-                      </div>
-                    </div>
-                    <StatusBadge status={r.status} hasError={!!r.errorText} />
-                  </Link>
+                    intent={r.intentSummary}
+                    decision={r.decision}
+                    status={r.status}
+                    errorText={r.errorText ?? null}
+                    timestamp={new Date(r.createdAt)}
+                  />
                 </li>
               ))}
             </ul>
@@ -128,23 +130,25 @@ export default async function GroupDetailPage({
           </CardHeader>
           <CardContent>
             {memory.length > 0 && (
-              <ul className="space-y-3 text-sm">
+              <dl className="space-y-3 text-sm">
                 {memory.map((m) => (
-                  <li key={m.id}>
-                    <div className="font-mono text-xs text-muted-foreground break-all">
+                  <div key={m.id}>
+                    <dt className="font-mono text-xs text-muted-foreground break-all">
                       {m.key}
-                    </div>
-                    <div>
-                      {typeof m.value === "string"
-                        ? m.value
-                        : JSON.stringify(m.value)}
-                    </div>
-                    <div className="mt-0.5 text-xs text-muted-foreground">
-                      {m.source}
-                    </div>
-                  </li>
+                    </dt>
+                    <dd className="mt-0.5 flex items-baseline gap-2">
+                      <span className="flex-1">
+                        {typeof m.value === "string"
+                          ? m.value
+                          : JSON.stringify(m.value)}
+                      </span>
+                      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                        {m.source}
+                      </span>
+                    </dd>
+                  </div>
                 ))}
-              </ul>
+              </dl>
             )}
           </CardContent>
         </Card>
@@ -160,7 +164,7 @@ export default async function GroupDetailPage({
           </CardHeader>
           <CardContent>
             {rules.length > 0 && (
-              <ul className="space-y-2 text-sm">
+              <ul className="space-y-1.5 text-sm">
                 {rules.map((r) => (
                   <li key={r.id}>📜 {r.ruleText}</li>
                 ))}
@@ -170,25 +174,5 @@ export default async function GroupDetailPage({
         </Card>
       </div>
     </div>
-  );
-}
-
-function StatusBadge({
-  status,
-  hasError,
-}: {
-  status: string;
-  hasError: boolean;
-}) {
-  const color =
-    status === "responded"
-      ? "bg-green-500/15 text-green-700 dark:text-green-400"
-      : status === "failed" || hasError
-        ? "bg-destructive/15 text-destructive"
-        : "bg-muted text-muted-foreground";
-  return (
-    <span className={`flex-shrink-0 rounded-full px-2 py-0.5 text-xs ${color}`}>
-      {status}
-    </span>
   );
 }

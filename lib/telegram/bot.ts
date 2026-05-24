@@ -333,6 +333,42 @@ if (!isCachedBot) {
     });
   });
 
+  // AUTOREPLY: per-group toggle. When ON, analyzer skips the @-mention gate
+  // and reads every group message. Default OFF (current behavior).
+  const AUTOREPLY_RE = /^\s*(?:@\w+\s+)?\/?autoreply\s+(on|off)\s*$/i;
+
+  bot.hears(AUTOREPLY_RE, async (ctx) => {
+    const chatType = ctx.chat.type;
+    if (chatType !== "group" && chatType !== "supergroup") return;
+    if (!ctx.from) return;
+
+    const chatId = ctx.chat.id.toString();
+    const group = await db.query.groups.findFirst({
+      where: eq(schema.groups.telegramChatId, chatId),
+    });
+    if (!group) return;
+
+    await upsertGroupMember(group.id, ctx.from);
+
+    const enabled = ctx.match[1].toLowerCase() === "on";
+
+    await db
+      .update(schema.groups)
+      .set({ autoReplyEnabled: enabled, updatedAt: new Date() })
+      .where(eq(schema.groups.id, group.id));
+
+    const replyText = enabled
+      ? "🤖 Auto-reply ON — I'll watch every message in this group and chime in when I can help. Send `@SidekickBot autoreply off` to revert."
+      : "🤐 Auto-reply OFF — I'll only respond when you @-mention me.";
+
+    await sendMessage({
+      platform: "telegram",
+      telegramChatId: chatId,
+      groupId: group.id,
+      text: replyText,
+    });
+  });
+
   // New message in a group
   bot.on("message", async (ctx) => {
     const chatType = ctx.chat.type;

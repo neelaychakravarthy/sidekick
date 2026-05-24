@@ -90,7 +90,14 @@ export const analyzer = inngest.createFunction(
       });
     });
 
-    if (groupForPlatform.platform === "telegram") {
+    // Mention gate: Telegram-only. When auto_reply_enabled is true on the group,
+    // skip the gate (analyze every message, just like iMessage). iMessage has no
+    // @-mention concept, so it's always treated as auto-reply on.
+    const skipMentionGate =
+      groupForPlatform.platform === "imessage" ||
+      groupForPlatform.autoReplyEnabled;
+
+    if (!skipMentionGate) {
       // Skip non-@-mention messages early (MVP behavior; proactive intervention is V2).
       const botUsername = await step.run("resolve-bot-username", () =>
         resolveBotUsername(),

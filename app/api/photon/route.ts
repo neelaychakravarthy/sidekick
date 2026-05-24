@@ -1,15 +1,13 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-import { and, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, eq, gt, isNull } from "drizzle-orm";
 
 import { db, schema } from "@/lib/db";
-import { embed, serializeEmbedding } from "@/lib/embeddings";
 import { inngest } from "@/lib/inngest/client";
 import { sendMessage } from "@/lib/messaging";
 
 const TOLERANCE_SEC = 5 * 60;
 const CLAIM_RE = /^\s*\/?claim\s+([a-zA-Z0-9]+)\s*$/i;
-const REMEMBER_RE = /^\s*\/?remember\s+(.+)/i;
 const RULE_RE = /^\s*\/?rule:\s*(.+)/i;
 const STOP_RE = /^\s*stop\s*$/i;
 const START_RE = /^\s*start\s*$/i;
@@ -158,11 +156,6 @@ export async function POST(req: Request) {
       await handleRule(group.id, ruleMatch[1].trim(), photonSenderId);
       return new Response("ok", { status: 200 });
     }
-    const rememberMatch = text.match(REMEMBER_RE);
-    if (rememberMatch) {
-      await handleRemember(group.id, rememberMatch[1].trim(), photonSenderId);
-      return new Response("ok", { status: 200 });
-    }
     if (STOP_RE.test(text) && photonSenderId) {
       await db
         .update(schema.groupMembers)
@@ -289,46 +282,6 @@ async function handleRule(
     // Legacy column name; holds the Photon sender id when set via iMessage.
     createdByTelegramUserId: photonSenderId,
   });
-}
-
-async function handleRemember(
-  groupId: string,
-  factText: string,
-  photonSenderId: string | null,
-) {
-  if (!factText) return;
-  const speaker = photonSenderId ?? "someone";
-  const attributedValue = `${speaker}: ${factText}`;
-  const slug =
-    speaker.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 16) || "user";
-  const tail = factText
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, "")
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 4)
-    .join("_");
-  const key = `${slug}_${tail || "fact"}`.slice(0, 40);
-  const vec = await embed(`${key}: ${attributedValue}`);
-  await db
-    .insert(schema.groupMemory)
-    .values({
-      groupId,
-      key,
-      value: attributedValue,
-      source: "user-stated" as const,
-      embedding: vec ? serializeEmbedding(vec) : null,
-    })
-    .onConflictDoUpdate({
-      target: [schema.groupMemory.groupId, schema.groupMemory.key],
-      set: {
-        value: sql`excluded.value`,
-        source: sql`excluded.source`,
-        embedding: sql`excluded.embedding`,
-        updatedAt: new Date(),
-      },
-    });
 }
 
 async function sendPhotonReplyBestEffort(

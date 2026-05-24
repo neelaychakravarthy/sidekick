@@ -6,7 +6,7 @@ import { embed, parseEmbedding } from "@/lib/embeddings";
 export type RetrievedMemory = {
   key: string;
   value: unknown;
-  source: "inferred" | "user-stated";
+  source: "inferred";
 };
 
 function cosineSimilarity(a: number[], b: number[]): number {

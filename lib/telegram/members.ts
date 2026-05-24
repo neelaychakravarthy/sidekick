@@ -18,19 +18,6 @@ export function deriveDisplayName(from: TelegramFrom | undefined | null): string
   return `user-${from.id}`;
 }
 
-export function deriveSpeakerSlug(displayName: string): string {
-  return (
-    displayName
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, "")
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean)
-      .join("_")
-      .slice(0, 24) || "user"
-  );
-}
-
 /** Upsert a group member on observed activity. Idempotent; updates lastSeenAt + bumps name/username if changed. */
 export async function upsertGroupMember(
   groupId: string,

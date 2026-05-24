@@ -22,10 +22,7 @@ export const agentRunStatus = pgEnum("agent_run_status", [
   "failed",
 ]);
 
-export const memorySource = pgEnum("memory_source", [
-  "inferred",
-  "user-stated",
-]);
+export const memorySource = pgEnum("memory_source", ["inferred"]);
 
 export const platform = pgEnum("platform", ["telegram", "imessage"]);
 

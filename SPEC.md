@@ -123,7 +123,7 @@ MVP demo flow: user registers in the Sidekick web app (control plane), gets inst
 | `group_members` | Lightweight tracking of telegram users present in connected groups (no full user model for non-registered) |
 | `messages` | All messages observed in connected groups (telegram_message_id, sender, text, ts, raw JSON) |
 | `agent_runs` | A single agentic work unit. Columns: `trigger_message_ids[]`, `status` (queued/analyzing/acting/responded/failed), `intent_summary`, `intent_keywords[]`, `ack_message_id`, `response_message_id`, `reasoning`, timestamps, `error_text` |
-| `group_memory` | Per-group key-value facts (key, value JSONB, source = "inferred" or "user-stated") |
+| `group_memory` | Per-group key-value facts (key, value JSONB, source = "inferred") |
 | `group_rules` | Per-group system-prompt additions from `@SidekickBot rule:` commands (rule_text, created_by_telegram_user_id) |
 
 ## Out of scope (Known Issues / Future Scope)

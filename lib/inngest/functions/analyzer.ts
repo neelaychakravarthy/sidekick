@@ -325,13 +325,23 @@ export const analyzer = inngest.createFunction(
     if (decision.kind === "DIRECT_REPLY") {
       const sendResult = await step.run("post-direct-reply", async () => {
         if (group.platform === "imessage") {
-          if (!group.photonSpaceId) return { externalMessageId: null };
-          return await sendMessage({
-            platform: "imessage",
-            photonSpaceId: group.photonSpaceId,
-            groupId: group.id,
-            text: decision.text,
-          });
+          if (group.bluebubblesChatGuid) {
+            return await sendMessage({
+              platform: "imessage",
+              bluebubblesChatGuid: group.bluebubblesChatGuid,
+              groupId: group.id,
+              text: decision.text,
+            });
+          }
+          if (group.photonSpaceId) {
+            return await sendMessage({
+              platform: "imessage",
+              photonSpaceId: group.photonSpaceId,
+              groupId: group.id,
+              text: decision.text,
+            });
+          }
+          return { externalMessageId: null };
         } else {
           if (!group.telegramChatId) return { externalMessageId: null };
           return await sendMessage({

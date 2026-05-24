@@ -111,22 +111,31 @@ export const agentExecutor = inngest.createFunction(
       ts: new Date(m.ts as unknown as string | Date),
     }));
 
-    // Post ack message — route by group platform.
+    // Post ack message — route by group platform and (for iMessage) backend
+    // (per-group backend is implied by which of bluebubblesChatGuid or
+    // photonSpaceId is populated on the group row).
     const ackText = `👀 looking into ${ctx.run.intentSummary ?? "this"}…`;
     const ackSendArgs: SendArgs =
-      ctx.group.platform === "imessage"
+      ctx.group.platform === "telegram"
         ? {
-            platform: "imessage",
-            photonSpaceId: ctx.group.photonSpaceId ?? "",
-            groupId: ctx.group.id,
-            text: ackText,
-          }
-        : {
             platform: "telegram",
             telegramChatId: ctx.group.telegramChatId ?? "",
             groupId: ctx.group.id,
             text: ackText,
-          };
+          }
+        : ctx.group.bluebubblesChatGuid
+          ? {
+              platform: "imessage",
+              bluebubblesChatGuid: ctx.group.bluebubblesChatGuid,
+              groupId: ctx.group.id,
+              text: ackText,
+            }
+          : {
+              platform: "imessage",
+              photonSpaceId: ctx.group.photonSpaceId ?? "",
+              groupId: ctx.group.id,
+              text: ackText,
+            };
     const ackResult = await step.run("post-ack", async () => {
       return await sendMessage(ackSendArgs);
     });
@@ -213,21 +222,28 @@ export const agentExecutor = inngest.createFunction(
       throw err;
     }
 
-    // Post final response — route by group platform.
+    // Post final response — route by group platform and (for iMessage) backend.
     const replySendArgs: SendArgs =
-      ctx.group.platform === "imessage"
+      ctx.group.platform === "telegram"
         ? {
-            platform: "imessage",
-            photonSpaceId: ctx.group.photonSpaceId ?? "",
-            groupId: ctx.group.id,
-            text: finalText,
-          }
-        : {
             platform: "telegram",
             telegramChatId: ctx.group.telegramChatId ?? "",
             groupId: ctx.group.id,
             text: finalText,
-          };
+          }
+        : ctx.group.bluebubblesChatGuid
+          ? {
+              platform: "imessage",
+              bluebubblesChatGuid: ctx.group.bluebubblesChatGuid,
+              groupId: ctx.group.id,
+              text: finalText,
+            }
+          : {
+              platform: "imessage",
+              photonSpaceId: ctx.group.photonSpaceId ?? "",
+              groupId: ctx.group.id,
+              text: finalText,
+            };
     const replyResult = await step.run("post-response", async () => {
       return await sendMessage(replySendArgs);
     });

@@ -1,3 +1,4 @@
+import { sendBluebubblesMessage } from "@/lib/bluebubbles/client";
 import { db, schema } from "@/lib/db";
 import { sendPhotonMessage } from "@/lib/photon/client";
 import { bot } from "@/lib/telegram/bot";
@@ -16,6 +17,12 @@ export type SendArgs =
       photonSpaceId: string;
       groupId: string;
       text: string;
+    }
+  | {
+      platform: "imessage";
+      bluebubblesChatGuid: string;
+      groupId: string;
+      text: string;
     };
 
 export type SendResult = {
@@ -24,9 +31,11 @@ export type SendResult = {
 };
 
 /**
- * Channel-routing send. Dispatches to the Telegram bot or the Photon
- * Spectrum SDK depending on `args.platform`. Returns the external message
- * id (when known) so callers can persist it on `agent_runs`.
+ * Channel-routing send. Dispatches to the Telegram bot, the Photon Spectrum
+ * SDK, or the BlueBubbles Server REST API depending on `args.platform` and
+ * (for iMessage) which backend identifier is populated on the args. Returns
+ * the external message id (when known) so callers can persist it on
+ * `agent_runs`.
  *
  * Also persists the bot's outgoing message to the `messages` table with
  * is_bot=true so the analyzer's sliding context window sees what the bot
@@ -41,6 +50,11 @@ export async function sendMessage(args: SendArgs): Promise<SendResult> {
       args.text,
     );
     externalMessageId = sent.message_id.toString();
+  } else if ("bluebubblesChatGuid" in args) {
+    externalMessageId = await sendBluebubblesMessage(
+      args.bluebubblesChatGuid,
+      args.text,
+    );
   } else {
     externalMessageId = await sendPhotonMessage(args.photonSpaceId, args.text);
   }
@@ -60,6 +74,11 @@ export async function sendMessage(args: SendArgs): Promise<SendResult> {
       await db.insert(schema.messages).values({
         ...baseValues,
         telegramMessageId: externalMessageId,
+      });
+    } else if ("bluebubblesChatGuid" in args) {
+      await db.insert(schema.messages).values({
+        ...baseValues,
+        bluebubblesMessageGuid: externalMessageId,
       });
     } else {
       await db.insert(schema.messages).values({

@@ -5,6 +5,7 @@ import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { embed, serializeEmbedding } from "@/lib/embeddings";
 import { inngest } from "@/lib/inngest/client";
+import { sendMessage } from "@/lib/messaging";
 
 const TOLERANCE_SEC = 5 * 60;
 const CLAIM_RE = /^\s*\/?claim\s+([a-zA-Z0-9]+)\s*$/i;
@@ -252,6 +253,7 @@ async function handleClaim(
   });
   if (!claim) {
     await sendPhotonReplyBestEffort(
+      groupId,
       photonSpaceId,
       "That claim token is invalid, expired, or already used.",
     );
@@ -269,6 +271,7 @@ async function handleClaim(
     where: eq(schema.users.id, claim.userId),
   });
   await sendPhotonReplyBestEffort(
+    groupId,
     photonSpaceId,
     `Group connected to ${user?.name ?? user?.email ?? "user"}'s dashboard.`,
   );
@@ -329,12 +332,17 @@ async function handleRemember(
 }
 
 async function sendPhotonReplyBestEffort(
+  groupId: string,
   spaceId: string,
   text: string,
 ): Promise<void> {
   try {
-    const { sendPhotonMessage } = await import("@/lib/photon/client");
-    await sendPhotonMessage(spaceId, text);
+    await sendMessage({
+      platform: "imessage",
+      photonSpaceId: spaceId,
+      groupId,
+      text,
+    });
   } catch (err) {
     console.error("[photon] failed to send reply:", err);
   }

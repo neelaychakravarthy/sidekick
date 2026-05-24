@@ -1,5 +1,7 @@
 import { relations, sql } from "drizzle-orm";
 import {
+  type AnyPgColumn,
+  boolean,
   integer,
   jsonb,
   pgEnum,
@@ -162,6 +164,7 @@ export const messages = pgTable(
     text: text("text"),
     ts: timestamp("ts", { withTimezone: true }).notNull(),
     raw: jsonb("raw").$type<Record<string, unknown>>().notNull(),
+    isBot: boolean("is_bot").notNull().default(false),
   },
   (t) => ({
     groupTgMsgUnique: uniqueIndex("messages_group_tg_msg").on(
@@ -192,6 +195,11 @@ export const agentRuns = pgTable("agent_runs", {
   responseMessageId: text("response_message_id"),
   reasoning: text("reasoning"),
   errorText: text("error_text"),
+  decision: text("decision"),
+  extendsRunId: text("extends_run_id").references(
+    (): AnyPgColumn => agentRuns.id,
+    { onDelete: "set null" },
+  ),
   createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()
     .notNull(),

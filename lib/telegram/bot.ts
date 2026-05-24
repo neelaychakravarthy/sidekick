@@ -4,6 +4,7 @@ import { Bot } from "grammy";
 import { db, schema } from "@/lib/db";
 import { embed, serializeEmbedding } from "@/lib/embeddings";
 import { inngest } from "@/lib/inngest/client";
+import { sendMessage } from "@/lib/messaging";
 import {
   deriveDisplayName,
   deriveSpeakerSlug,
@@ -61,10 +62,17 @@ if (!isCachedBot) {
       }
 
       // Post intro
-      try {
-        await ctx.reply(INTRO_MESSAGE);
-      } catch (err) {
-        console.error("[telegram] failed to post intro message:", err);
+      if (group) {
+        try {
+          await sendMessage({
+            platform: "telegram",
+            telegramChatId: chatId,
+            groupId: group.id,
+            text: INTRO_MESSAGE,
+          });
+        } catch (err) {
+          console.error("[telegram] failed to post intro message:", err);
+        }
       }
     }
   });
@@ -98,17 +106,28 @@ if (!isCachedBot) {
       ),
     });
 
-    if (!claim) {
-      await ctx.reply(
-        "❌ That claim token is invalid, expired, or already used. Generate a new one from the dashboard.",
-      );
-      return;
-    }
-
-    // Look up the group (must already be registered — bot must be in it)
+    // Look up the group (must already be registered — bot must be in it).
+    // Resolved before the token validity check so the invalid-token reply path
+    // can still persist via sendMessage when the group row exists.
     const group = await db.query.groups.findFirst({
       where: eq(schema.groups.telegramChatId, chatId),
     });
+
+    if (!claim) {
+      if (group) {
+        await sendMessage({
+          platform: "telegram",
+          telegramChatId: chatId,
+          groupId: group.id,
+          text: "❌ That claim token is invalid, expired, or already used. Generate a new one from the dashboard.",
+        });
+      } else {
+        await ctx.reply(
+          "❌ That claim token is invalid, expired, or already used. Generate a new one from the dashboard.",
+        );
+      }
+      return;
+    }
 
     if (!group) {
       await ctx.reply(
@@ -137,7 +156,12 @@ if (!isCachedBot) {
       .where(eq(schema.claimTokens.id, claim.id));
 
     const displayName = user?.name ?? user?.email ?? "user";
-    await ctx.reply(`✅ Group connected to ${displayName}'s dashboard.`);
+    await sendMessage({
+      platform: "telegram",
+      telegramChatId: chatId,
+      groupId: group.id,
+      text: `✅ Group connected to ${displayName}'s dashboard.`,
+    });
   });
 
   // Explicit memory commands. Registered AFTER claim and BEFORE the generic
@@ -183,7 +207,12 @@ if (!isCachedBot) {
       createdByTelegramUserId: ctx.from?.id?.toString() ?? null,
     });
 
-    await ctx.reply(`📜 Rule added by ${displayName}: ${ruleText}`);
+    await sendMessage({
+      platform: "telegram",
+      telegramChatId: chatId,
+      groupId: group.id,
+      text: `📜 Rule added by ${displayName}: ${ruleText}`,
+    });
   });
 
   bot.hears(REMEMBER_RE, async (ctx) => {
@@ -230,7 +259,12 @@ if (!isCachedBot) {
         },
       });
 
-    await ctx.reply(`🧠 Noted: ${attributedValue}`);
+    await sendMessage({
+      platform: "telegram",
+      telegramChatId: chatId,
+      groupId: group.id,
+      text: `🧠 Noted: ${attributedValue}`,
+    });
   });
 
   // STOP: opt this speaker out of message logging in this group.
@@ -258,9 +292,12 @@ if (!isCachedBot) {
       );
 
     const displayName = deriveDisplayName(ctx.from);
-    await ctx.reply(
-      `🤫 Got it, ${displayName} — I'll stop logging your messages and won't include them in context. Reply START to resume.`,
-    );
+    await sendMessage({
+      platform: "telegram",
+      telegramChatId: chatId,
+      groupId: group.id,
+      text: `🤫 Got it, ${displayName} — I'll stop logging your messages and won't include them in context. Reply START to resume.`,
+    });
   });
 
   // START: re-enable message logging for this speaker in this group.
@@ -288,9 +325,12 @@ if (!isCachedBot) {
       );
 
     const displayName = deriveDisplayName(ctx.from);
-    await ctx.reply(
-      `👋 Welcome back, ${displayName} — I'll log your messages again.`,
-    );
+    await sendMessage({
+      platform: "telegram",
+      telegramChatId: chatId,
+      groupId: group.id,
+      text: `👋 Welcome back, ${displayName} — I'll log your messages again.`,
+    });
   });
 
   // New message in a group

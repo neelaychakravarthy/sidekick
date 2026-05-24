@@ -66,13 +66,55 @@ export const analyzer = inngest.createFunction(
       return { decision: "SILENT", reason: "no_group" };
     }
 
+    // Create the agent_runs row at the TOP of the flow so every analyzer
+    // invocation is traceable in the activity feed — including SILENT outcomes
+    // (non-@-mention or LLM-SILENT). Decision and final status are filled in
+    // by whichever branch we fall into below.
+    const runId = await step.run("create-agent-run", async () => {
+      const inserted = await db
+        .insert(schema.agentRuns)
+        .values({
+          groupId,
+          triggerMessageIds: [messageId],
+          status: "analyzing",
+        })
+        .returning({ id: schema.agentRuns.id });
+      return inserted[0].id;
+    });
+
+    await step.run("log-trigger", async () => {
+      await logStep(runId, "trigger", {
+        messageId,
+        text: text ?? "",
+        telegramMessageId: event.data.telegramMessageId,
+      });
+    });
+
     if (groupForPlatform.platform === "telegram") {
       // Skip non-@-mention messages early (MVP behavior; proactive intervention is V2).
       const botUsername = await step.run("resolve-bot-username", () =>
         resolveBotUsername(),
       );
       if (!messageMentionsBot(text, botUsername)) {
-        return { decision: "SILENT", reason: "no_mention" };
+        await step.run("mark-silent-no-mention", async () => {
+          await db
+            .update(schema.agentRuns)
+            .set({
+              status: "responded",
+              decision: "silent",
+              reasoning: "not @-mentioned",
+              respondedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(eq(schema.agentRuns.id, runId));
+        });
+        await step.run("log-analyzer-decision-no-mention", async () => {
+          await logStep(runId, "analyzer_decision", {
+            decision: "SILENT",
+            reason: "no_mention",
+          });
+        });
+        return { decision: "SILENT", reason: "no_mention", runId };
       }
     }
 
@@ -91,6 +133,7 @@ export const analyzer = inngest.createFunction(
             ts: schema.messages.ts,
             telegramUserId: schema.messages.telegramUserId,
             displayName: schema.groupMembers.displayName,
+            isBot: schema.messages.isBot,
           })
           .from(schema.messages)
           .leftJoin(
@@ -144,7 +187,19 @@ export const analyzer = inngest.createFunction(
     const group = loaded.group;
     if (!group) {
       logger.warn("[analyzer] group not found, skipping", { groupId });
-      return { decision: "SILENT", reason: "no_group" };
+      await step.run("mark-silent-no-group", async () => {
+        await db
+          .update(schema.agentRuns)
+          .set({
+            status: "responded",
+            decision: "silent",
+            reasoning: "group not found",
+            respondedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.agentRuns.id, runId));
+      });
+      return { decision: "SILENT", reason: "no_group", runId };
     }
 
     // Semantic memory retrieval — top-K cosine-ranked by trigger text, with
@@ -173,6 +228,7 @@ export const analyzer = inngest.createFunction(
             (m.telegramUserId ? `user-${m.telegramUserId}` : "unknown"),
           text: m.text ?? "(no text)",
           ts: m.ts,
+          isBot: m.isBot,
         })),
         activeRuns: loaded.activeRuns.map((r) => ({
           id: r.id,
@@ -228,37 +284,97 @@ export const analyzer = inngest.createFunction(
             },
           });
       });
+
+      await step.run("log-inferred-memory", async () => {
+        await logStep(runId, "inferred_memory", {
+          facts: decision.inferredFacts,
+        });
+      });
     }
 
     // Act on the decision.
     if (decision.kind === "SILENT") {
-      return { decision: "SILENT", reason: "llm" };
+      await step.run("mark-silent-llm", async () => {
+        await db
+          .update(schema.agentRuns)
+          .set({
+            status: "responded",
+            decision: "silent",
+            reasoning: "model returned SILENT",
+            respondedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.agentRuns.id, runId));
+      });
+      await step.run("log-analyzer-decision-silent", async () => {
+        await logStep(runId, "analyzer_decision", {
+          decision: "SILENT",
+        });
+      });
+      return { decision: "SILENT", reason: "llm", runId };
     }
 
     if (decision.kind === "DIRECT_REPLY") {
-      await step.run("post-direct-reply", async () => {
+      const sendResult = await step.run("post-direct-reply", async () => {
         if (group.platform === "imessage") {
-          if (!group.photonSpaceId) return;
-          await sendMessage({
+          if (!group.photonSpaceId) return { externalMessageId: null };
+          return await sendMessage({
             platform: "imessage",
             photonSpaceId: group.photonSpaceId,
+            groupId: group.id,
             text: decision.text,
           });
         } else {
-          if (!group.telegramChatId) return;
-          await sendMessage({
+          if (!group.telegramChatId) return { externalMessageId: null };
+          return await sendMessage({
             platform: "telegram",
             telegramChatId: group.telegramChatId,
+            groupId: group.id,
             text: decision.text,
           });
         }
       });
-      return { decision: "DIRECT_REPLY" };
+      await step.run("mark-direct-reply", async () => {
+        await db
+          .update(schema.agentRuns)
+          .set({
+            status: "responded",
+            decision: "direct_reply",
+            reasoning: decision.text,
+            responseMessageId: sendResult.externalMessageId,
+            respondedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.agentRuns.id, runId));
+      });
+      await step.run("log-analyzer-decision-direct", async () => {
+        await logStep(runId, "analyzer_decision", {
+          decision: "DIRECT_REPLY",
+          text: decision.text,
+        });
+      });
+      return { decision: "DIRECT_REPLY", runId };
     }
 
     if (decision.kind === "EXTEND_RUN") {
-      // Append this trigger message to the existing run's trigger_message_ids
-      await step.run("extend-run", async () => {
+      // Update this new logging row first.
+      await step.run("mark-extend-run", async () => {
+        await db
+          .update(schema.agentRuns)
+          .set({
+            status: "responded",
+            decision: "extend_run",
+            extendsRunId: decision.extendsRunId,
+            intentSummary: decision.intentSummary,
+            intentKeywords: decision.intentKeywords,
+            respondedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.agentRuns.id, runId));
+      });
+      // Append this trigger message to the existing target run's
+      // trigger_message_ids so the executor sees the new ask.
+      await step.run("extend-target-run", async () => {
         await db
           .update(schema.agentRuns)
           .set({
@@ -269,27 +385,28 @@ export const analyzer = inngest.createFunction(
           })
           .where(eq(schema.agentRuns.id, decision.extendsRunId));
       });
-      await step.run("log-trigger", async () => {
+      await step.run("log-analyzer-decision-extend", async () => {
+        await logStep(runId, "analyzer_decision", {
+          decision: "EXTEND_RUN",
+          extends_run_id: decision.extendsRunId,
+          intent_summary: decision.intentSummary,
+          intent_keywords: decision.intentKeywords,
+        });
+      });
+      await step.run("log-trigger-on-target", async () => {
         await logStep(decision.extendsRunId, "trigger", {
           messageId,
           text: text ?? "",
           telegramMessageId: event.data.telegramMessageId,
         });
       });
-      await step.run("log-analyzer-decision", async () => {
+      await step.run("log-analyzer-decision-on-target", async () => {
         await logStep(decision.extendsRunId, "analyzer_decision", {
           decision: "EXTEND_RUN",
           intent_summary: decision.intentSummary,
           intent_keywords: decision.intentKeywords,
         });
       });
-      if (decision.inferredFacts.length > 0) {
-        await step.run("log-inferred-memory", async () => {
-          await logStep(decision.extendsRunId, "inferred_memory", {
-            facts: decision.inferredFacts,
-          });
-        });
-      }
       // Re-emit agent.run-requested so the executor picks up the extended context
       await step.sendEvent("re-emit-extended", {
         name: "agent.run-requested",
@@ -299,55 +416,46 @@ export const analyzer = inngest.createFunction(
           triggerMessageIds: [messageId],
         },
       });
-      return { decision: "EXTEND_RUN", runId: decision.extendsRunId };
+      return {
+        decision: "EXTEND_RUN",
+        runId,
+        extendsRunId: decision.extendsRunId,
+      };
     }
 
-    // NEW_ACTION
-    const newRunId = await step.run("create-agent-run", async () => {
-      const inserted = await db
-        .insert(schema.agentRuns)
-        .values({
-          groupId,
-          triggerMessageIds: [messageId],
+    // NEW_ACTION — promote our analyzer row into the executable run by setting
+    // status back to "queued" and filling in intent fields. The executor takes
+    // over from here and flips it to "acting" → "responded".
+    await step.run("mark-new-action", async () => {
+      await db
+        .update(schema.agentRuns)
+        .set({
           status: "queued",
+          decision: "new_action",
           intentSummary: decision.intentSummary,
           intentKeywords: decision.intentKeywords,
+          updatedAt: new Date(),
         })
-        .returning({ id: schema.agentRuns.id });
-      return inserted[0].id;
+        .where(eq(schema.agentRuns.id, runId));
     });
 
-    await step.run("log-trigger", async () => {
-      await logStep(newRunId, "trigger", {
-        messageId,
-        text: text ?? "",
-        telegramMessageId: event.data.telegramMessageId,
-      });
-    });
-    await step.run("log-analyzer-decision", async () => {
-      await logStep(newRunId, "analyzer_decision", {
+    await step.run("log-analyzer-decision-new-action", async () => {
+      await logStep(runId, "analyzer_decision", {
         decision: decision.kind,
         intent_summary: decision.intentSummary,
         intent_keywords: decision.intentKeywords,
       });
     });
-    if (decision.inferredFacts.length > 0) {
-      await step.run("log-inferred-memory", async () => {
-        await logStep(newRunId, "inferred_memory", {
-          facts: decision.inferredFacts,
-        });
-      });
-    }
 
     await step.sendEvent("emit-run-requested", {
       name: "agent.run-requested",
       data: {
         groupId,
-        runId: newRunId,
+        runId,
         triggerMessageIds: [messageId],
       },
     });
 
-    return { decision: "NEW_ACTION", runId: newRunId };
+    return { decision: "NEW_ACTION", runId };
   },
 );

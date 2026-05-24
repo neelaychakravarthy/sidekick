@@ -22,7 +22,12 @@ export type AnalyzerDecision =
 export type AnalyzerInput = {
   groupName: string;
   triggerText: string;
-  contextMessages: Array<{ sender: string; text: string; ts: Date }>;
+  contextMessages: Array<{
+    sender: string;
+    text: string;
+    ts: Date;
+    isBot: boolean;
+  }>;
   activeRuns: Array<{
     id: string;
     intentSummary: string | null;
@@ -57,6 +62,11 @@ Memory extraction (every response, regardless of decision):
 - Values are short third-person strings (≤ 200 chars).
 - DO NOT extract greetings, jokes, ephemeral chat, or things already in the provided "Group memory" list above.
 
+Avoiding repetition:
+- The recent messages list includes your own prior replies, labeled "Sidekick (you): ...".
+- If the user @-mentions you about something you've already addressed in a recent reply, choose SILENT or DIRECT_REPLY (short acknowledgment) rather than NEW_ACTION.
+- Don't re-answer questions you've answered. If asked the same thing again, acknowledge it briefly.
+
 CRITICAL: Respond ONLY with valid JSON. No prose before or after. Schema:
 {
   "decision": "SILENT" | "DIRECT_REPLY" | "EXTEND_RUN" | "NEW_ACTION",
@@ -72,7 +82,10 @@ CRITICAL: Respond ONLY with valid JSON. No prose before or after. Schema:
 
 export function buildAnalyzerUserPrompt(input: AnalyzerInput): string {
   const ctx = input.contextMessages
-    .map((m) => `[${m.ts.toISOString()}] ${m.sender}: ${m.text}`)
+    .map((m) => {
+      const label = m.isBot ? "Sidekick (you)" : m.sender;
+      return `[${m.ts.toISOString()}] ${label}: ${m.text}`;
+    })
     .join("\n");
   const runs =
     input.activeRuns.length === 0

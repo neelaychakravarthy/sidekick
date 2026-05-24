@@ -52,6 +52,7 @@ export const agentExecutor = inngest.createFunction(
             ts: schema.messages.ts,
             telegramUserId: schema.messages.telegramUserId,
             displayName: schema.groupMembers.displayName,
+            isBot: schema.messages.isBot,
           })
           .from(schema.messages)
           .leftJoin(
@@ -117,11 +118,13 @@ export const agentExecutor = inngest.createFunction(
         ? {
             platform: "imessage",
             photonSpaceId: ctx.group.photonSpaceId ?? "",
+            groupId: ctx.group.id,
             text: ackText,
           }
         : {
             platform: "telegram",
             telegramChatId: ctx.group.telegramChatId ?? "",
+            groupId: ctx.group.id,
             text: ackText,
           };
     const ackResult = await step.run("post-ack", async () => {
@@ -156,7 +159,7 @@ export const agentExecutor = inngest.createFunction(
         const client = getAnthropic();
         const resp = await client.messages.create({
           model: ANTHROPIC_MODEL,
-          max_tokens: 1024,
+          max_tokens: 400,
           system: buildAgentSystemPrompt(),
           messages: [
             {
@@ -173,6 +176,7 @@ export const agentExecutor = inngest.createFunction(
                       : "unknown"),
                   text: m.text ?? "(no text)",
                   ts: m.ts,
+                  isBot: m.isBot,
                 })),
                 groupMemory: mem,
                 groupRules: ctx.rules,
@@ -208,11 +212,13 @@ export const agentExecutor = inngest.createFunction(
         ? {
             platform: "imessage",
             photonSpaceId: ctx.group.photonSpaceId ?? "",
+            groupId: ctx.group.id,
             text: finalText,
           }
         : {
             platform: "telegram",
             telegramChatId: ctx.group.telegramChatId ?? "",
+            groupId: ctx.group.id,
             text: finalText,
           };
     const replyResult = await step.run("post-response", async () => {

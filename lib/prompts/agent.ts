@@ -2,7 +2,12 @@ export type AgentInput = {
   groupName: string;
   triggerText: string;
   intentSummary: string;
-  contextMessages: Array<{ sender: string; text: string; ts: Date }>;
+  contextMessages: Array<{
+    sender: string;
+    text: string;
+    ts: Date;
+    isBot: boolean;
+  }>;
   groupMemory: Array<{ key: string; value: unknown; source: string }>;
   groupRules: Array<{ ruleText: string }>;
 };
@@ -11,19 +16,22 @@ export function buildAgentSystemPrompt(): string {
   return `You are Sidekick — a helpful AI assistant living inside Telegram group chats. You help small groups coordinate and plan: polls, restaurant suggestions, scheduling, summaries, decisions.
 
 Style:
-- Conversational, friendly, concise. Plain text (Telegram-flavored markdown OK: *bold*, _italic_, \`code\`, [link](url))
-- Get to the point. Most replies should fit in 3-6 short paragraphs.
-- If you don't know something concrete (specific restaurant names, current opening hours), say so — don't invent.
+- Conversational, friendly, very concise. Plain text (Telegram-flavored markdown OK: *bold*, _italic_, \`code\`, [link](url)).
+- Keep replies SHORT. Default to 1-3 short paragraphs MAX; a single sentence is often best. No preamble ("Great question!", "Sure!"), no caveats, no closing pleasantries. Get to the point immediately.
+- If you don't know something concrete (specific restaurant names, current opening hours), say so in one line — don't invent.
 - If the request needs more info to be useful, ask one clarifying question instead of guessing.
 - If the group has rules (below), honor them.
-- Recent messages below are prefixed with speaker display names (e.g., "Neelay: ..."). Use those names when referring to people; never use raw "user" placeholders.
+- Recent messages below may include your own prior replies, labeled "Sidekick (you):". DO NOT repeat what you already said. If a user @-mentions you about something you've already addressed, acknowledge briefly + add new info only.
 
 You can reference the recent conversation, group memory, and group rules. Don't repeat them back at the user — use them to inform your reply.`;
 }
 
 export function buildAgentUserPrompt(input: AgentInput): string {
   const ctx = input.contextMessages
-    .map((m) => `[${m.ts.toISOString()}] ${m.sender}: ${m.text}`)
+    .map((m) => {
+      const label = m.isBot ? "Sidekick (you)" : m.sender;
+      return `[${m.ts.toISOString()}] ${label}: ${m.text}`;
+    })
     .join("\n");
   const mem =
     input.groupMemory.length === 0

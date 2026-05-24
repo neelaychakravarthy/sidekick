@@ -36,6 +36,7 @@ export default async function DashboardPage() {
         intentSummary: schema.agentRuns.intentSummary,
         status: schema.agentRuns.status,
         createdAt: schema.agentRuns.createdAt,
+        groupId: schema.agentRuns.groupId,
         groupName: schema.groups.name,
       })
       .from(schema.agentRuns)
@@ -100,7 +101,14 @@ export default async function DashboardPage() {
             <>
               <ul className="mb-3 space-y-2 text-sm">
                 {userGroups.map((g) => (
-                  <li key={g.id}>{g.name}</li>
+                  <li key={g.id}>
+                    <Link
+                      href={`/dashboard/groups/${g.id}`}
+                      className="-mx-3 block rounded-md px-3 py-1.5 hover:bg-muted/60"
+                    >
+                      {g.name}
+                    </Link>
+                  </li>
                 ))}
               </ul>
               <Button
@@ -132,12 +140,17 @@ export default async function DashboardPage() {
             <ul className="space-y-2 text-sm">
               {recentRuns.map((r) => (
                 <li key={r.id}>
-                  <div className="font-medium">
-                    {r.intentSummary ?? "(no summary)"}
-                  </div>
-                  <div className="text-xs text-muted-foreground">
-                    {r.groupName} · {r.status}
-                  </div>
+                  <Link
+                    href={`/dashboard/groups/${r.groupId}/runs/${r.id}`}
+                    className="-mx-3 block rounded-md px-3 py-1.5 hover:bg-muted/60"
+                  >
+                    <div className="font-medium">
+                      {r.intentSummary ?? "(no summary)"}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {r.groupName} · {r.status}
+                    </div>
+                  </Link>
                 </li>
               ))}
             </ul>

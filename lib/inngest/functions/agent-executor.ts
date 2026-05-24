@@ -1,5 +1,6 @@
 import { and, desc, eq, gte, inArray } from "drizzle-orm";
 
+import { logStep } from "@/lib/agent-steps";
 import { ANTHROPIC_MODEL, getAnthropic } from "@/lib/anthropic";
 import { db, schema } from "@/lib/db";
 import { inngest } from "@/lib/inngest/client";
@@ -16,6 +17,7 @@ export const agentExecutor = inngest.createFunction(
   {
     id: "agent-executor",
     name: "Agent executor",
+    retries: 3,
     triggers: [{ event: "agent.run-requested" }],
   },
   async ({ event, step, logger }) => {
@@ -118,7 +120,18 @@ export const agentExecutor = inngest.createFunction(
         .where(eq(schema.agentRuns.id, runId));
     });
 
+    await step.run("log-ack-posted", async () => {
+      await logStep(runId, "ack_posted", {
+        text: ackText,
+        telegramMessageId: ack.message_id.toString(),
+      });
+    });
+
     // Call Claude for the final response
+    await step.run("log-agent-llm-call", async () => {
+      await logStep(runId, "agent_llm_call", { model: ANTHROPIC_MODEL });
+    });
+
     let finalText: string;
     try {
       finalText = await step.run("agent-llm", async () => {
@@ -160,6 +173,10 @@ export const agentExecutor = inngest.createFunction(
           updatedAt: new Date(),
         })
         .where(eq(schema.agentRuns.id, runId));
+      await logStep(runId, "error", {
+        where: "agent_llm",
+        message: err instanceof Error ? err.message : String(err),
+      });
       throw err;
     }
 
@@ -183,6 +200,13 @@ export const agentExecutor = inngest.createFunction(
           updatedAt: new Date(),
         })
         .where(eq(schema.agentRuns.id, runId));
+    });
+
+    await step.run("log-response-posted", async () => {
+      await logStep(runId, "response_posted", {
+        text: finalText,
+        telegramMessageId: reply.message_id.toString(),
+      });
     });
 
     return { runId, status: "responded" };

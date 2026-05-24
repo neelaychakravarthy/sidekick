@@ -237,6 +237,39 @@ if (!isCachedBot) {
       });
     }
   });
+
+  // Edited message in a group — update the stored row. We don't re-emit
+  // message.received: edits are rare and the analyzer already processed the
+  // original; re-running would create duplicate ack messages.
+  bot.on("edited_message", async (ctx) => {
+    const chatType = ctx.chat.type;
+    if (chatType !== "group" && chatType !== "supergroup") return;
+
+    const editedMsg = ctx.editedMessage;
+    if (!editedMsg) return;
+
+    const chatId = ctx.chat.id.toString();
+    const group = await db.query.groups.findFirst({
+      where: eq(schema.groups.telegramChatId, chatId),
+    });
+    if (!group) return;
+
+    await db
+      .update(schema.messages)
+      .set({
+        text: editedMsg.text ?? null,
+        raw: ctx.update as unknown as Record<string, unknown>,
+      })
+      .where(
+        and(
+          eq(schema.messages.groupId, group.id),
+          eq(
+            schema.messages.telegramMessageId,
+            editedMsg.message_id.toString(),
+          ),
+        ),
+      );
+  });
 }
 
 if (process.env.NODE_ENV !== "production") globalThis.__sidekick_bot = bot;

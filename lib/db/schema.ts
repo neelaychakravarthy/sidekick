@@ -184,6 +184,23 @@ export const agentRuns = pgTable("agent_runs", {
   respondedAt: timestamp("responded_at", { withTimezone: true }),
 });
 
+export const agentRunSteps = pgTable("agent_run_steps", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  agentRunId: text("agent_run_id")
+    .notNull()
+    .references(() => agentRuns.id, { onDelete: "cascade" }),
+  kind: text("kind").notNull(),
+  payload: jsonb("payload")
+    .$type<Record<string, unknown>>()
+    .notNull()
+    .default({}),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+});
+
 export const groupMemory = pgTable(
   "group_memory",
   {
@@ -269,10 +286,18 @@ export const messagesRelations = relations(messages, ({ one }) => ({
   }),
 }));
 
-export const agentRunsRelations = relations(agentRuns, ({ one }) => ({
+export const agentRunsRelations = relations(agentRuns, ({ one, many }) => ({
   group: one(groups, {
     fields: [agentRuns.groupId],
     references: [groups.id],
+  }),
+  steps: many(agentRunSteps),
+}));
+
+export const agentRunStepsRelations = relations(agentRunSteps, ({ one }) => ({
+  run: one(agentRuns, {
+    fields: [agentRunSteps.agentRunId],
+    references: [agentRuns.id],
   }),
 }));
 

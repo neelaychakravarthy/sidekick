@@ -1,5 +1,6 @@
 import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 
+import { logStep } from "@/lib/agent-steps";
 import { ANTHROPIC_MODEL, getAnthropic } from "@/lib/anthropic";
 import { db, schema } from "@/lib/db";
 import { inngest } from "@/lib/inngest/client";
@@ -45,6 +46,7 @@ export const analyzer = inngest.createFunction(
   {
     id: "analyzer",
     name: "Analyzer",
+    retries: 3,
     triggers: [{ event: "message.received" }],
   },
   async ({ event, step, logger }) => {
@@ -219,6 +221,27 @@ export const analyzer = inngest.createFunction(
           })
           .where(eq(schema.agentRuns.id, decision.extendsRunId));
       });
+      await step.run("log-trigger", async () => {
+        await logStep(decision.extendsRunId, "trigger", {
+          messageId,
+          text: text ?? "",
+          telegramMessageId: event.data.telegramMessageId,
+        });
+      });
+      await step.run("log-analyzer-decision", async () => {
+        await logStep(decision.extendsRunId, "analyzer_decision", {
+          decision: "EXTEND_RUN",
+          intent_summary: decision.intentSummary,
+          intent_keywords: decision.intentKeywords,
+        });
+      });
+      if (decision.inferredFacts.length > 0) {
+        await step.run("log-inferred-memory", async () => {
+          await logStep(decision.extendsRunId, "inferred_memory", {
+            facts: decision.inferredFacts,
+          });
+        });
+      }
       // Re-emit agent.run-requested so the executor picks up the extended context
       await step.sendEvent("re-emit-extended", {
         name: "agent.run-requested",
@@ -245,6 +268,28 @@ export const analyzer = inngest.createFunction(
         .returning({ id: schema.agentRuns.id });
       return inserted[0].id;
     });
+
+    await step.run("log-trigger", async () => {
+      await logStep(newRunId, "trigger", {
+        messageId,
+        text: text ?? "",
+        telegramMessageId: event.data.telegramMessageId,
+      });
+    });
+    await step.run("log-analyzer-decision", async () => {
+      await logStep(newRunId, "analyzer_decision", {
+        decision: decision.kind,
+        intent_summary: decision.intentSummary,
+        intent_keywords: decision.intentKeywords,
+      });
+    });
+    if (decision.inferredFacts.length > 0) {
+      await step.run("log-inferred-memory", async () => {
+        await logStep(newRunId, "inferred_memory", {
+          facts: decision.inferredFacts,
+        });
+      });
+    }
 
     await step.sendEvent("emit-run-requested", {
       name: "agent.run-requested",

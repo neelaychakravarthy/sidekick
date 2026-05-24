@@ -1,15 +1,17 @@
-import { Spectrum, type SpectrumInstance } from "spectrum-ts";
+import { Spectrum, type Space, text } from "spectrum-ts";
 import { imessage } from "spectrum-ts/providers/imessage";
 
 // Lazy SDK init pattern. Caches the in-flight promise AND the resolved
 // instance on globalThis so two concurrent cold-start requests don't
 // double-construct.
 declare global {
-  var __sidekick_spectrum: SpectrumInstance | undefined;
-  var __sidekick_spectrum_promise: Promise<SpectrumInstance> | undefined;
+  var __sidekick_spectrum: Awaited<ReturnType<typeof Spectrum>> | undefined;
+  var __sidekick_spectrum_promise:
+    | Promise<Awaited<ReturnType<typeof Spectrum>>>
+    | undefined;
 }
 
-async function getApp(): Promise<SpectrumInstance> {
+async function getApp() {
   if (globalThis.__sidekick_spectrum) return globalThis.__sidekick_spectrum;
   if (globalThis.__sidekick_spectrum_promise) {
     return globalThis.__sidekick_spectrum_promise;
@@ -35,37 +37,46 @@ async function getApp(): Promise<SpectrumInstance> {
   return globalThis.__sidekick_spectrum_promise;
 }
 
+function inferSpaceType(spaceId: string): "dm" | "group" {
+  // Per Spectrum docs: iMessage DM space.id has the form "any;-;+<E.164>".
+  // Group spaces are opaque chat GUIDs.
+  return /^any;-;\+/.test(spaceId) ? "dm" : "group";
+}
+
 /**
- * Send a text message via Photon Spectrum (iMessage).
+ * Send a text message via Photon Spectrum (iMessage) to the given space.
  *
- * Returns the sent message's id when available, or null if the SDK didn't
- * surface one.
+ * The SDK's `app.send(space, content)` reads space.id, space.__platform,
+ * space.type, and space.phone — none of the Space interface's runtime
+ * methods. We construct a minimal Space-shaped object from those four fields
+ * and cast through `unknown`, accepting the (real) trade-off: any Space-method
+ * call inside the SDK's send pipeline would NPE. The iMessage send action
+ * (chunk-FPYXHZZA.js line 2134) doesn't call any.
  *
- * KNOWN GAP (spectrum-ts 1.12.0): the SDK's public surface offers no
- * `getSpace(id)` / send-by-id call. `SpectrumInstance.send(space, content)`
- * requires a `Space` object, which is normally obtained from the inbound
- * `app.messages` async iterator OR constructed via
- * `imessage(app).space(users, params)` — both require knowing the
- * participant users (with phone numbers), which a webhook does not give us.
- *
- * Until the SDK exposes a send-by-id (or until we wire the streaming model
- * end-to-end), this function will throw at runtime. The shape is stable so
- * the messaging-router callsite is ready when the gap is closed.
+ * Returns the sent message's id when the SDK surfaces it, or null otherwise.
  */
 export async function sendPhotonMessage(
   spaceId: string,
-  text: string,
+  body: string,
 ): Promise<string | null> {
-  // Force the lazy init to surface env-var errors first if any.
-  await getApp();
-  // params kept on the signature for the eventual SDK fix; reference them
-  // explicitly so the runtime error preserves the call context.
-  void spaceId;
-  void text;
-  throw new Error(
-    "[photon] sendPhotonMessage: spectrum-ts 1.12.0 has no send-by-id API. " +
-      "iMessage send currently requires a Space obtained from the inbound " +
-      "stream (app.messages). Wire the streaming model or upgrade once a " +
-      "send-by-id is published.",
-  );
+  const linePhone = process.env.PHOTON_LINE_NUMBER;
+  if (!linePhone) {
+    throw new Error(
+      "PHOTON_LINE_NUMBER must be set to send iMessages. Add your Photon line number (e.g. +15551234567) to .env.local.",
+    );
+  }
+
+  const app = await getApp();
+
+  const space = {
+    id: spaceId,
+    __platform: "iMessage",
+    type: inferSpaceType(spaceId),
+    phone: linePhone,
+  } as unknown as Space;
+
+  const result = await app.send(space, text(body));
+  const maybeId =
+    (result as { id?: string } | null | undefined)?.id ?? null;
+  return maybeId;
 }

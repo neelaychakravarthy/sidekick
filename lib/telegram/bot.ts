@@ -303,6 +303,15 @@ if (!isCachedBot) {
     const chatType = ctx.chat.type;
     if (chatType !== "group" && chatType !== "supergroup") return;
 
+    // Skip Telegram service messages (new_chat_members, left_chat_member,
+    // new_chat_title, pinned_message, etc.). These have no text/caption —
+    // they're metadata, not conversation. Critical: without this filter, the
+    // "X added Sidekick to the group" service message races with
+    // my_chat_member's group-row insert and triggers our leave-if-no-group-row
+    // guard below before the row exists, causing the bot to immediately leave
+    // any group it's just been added to.
+    if (!ctx.message.text && !ctx.message.caption) return;
+
     const chatId = ctx.chat.id.toString();
     const group = await db.query.groups.findFirst({
       where: eq(schema.groups.telegramChatId, chatId),
@@ -373,6 +382,11 @@ if (!isCachedBot) {
 
     const editedMsg = ctx.editedMessage;
     if (!editedMsg) return;
+
+    // Skip Telegram service messages (see bot.on("message") above). Edited
+    // service messages are extraordinarily rare but the filter is cheap and
+    // keeps the two handlers symmetric.
+    if (!editedMsg.text && !editedMsg.caption) return;
 
     const chatId = ctx.chat.id.toString();
     const group = await db.query.groups.findFirst({

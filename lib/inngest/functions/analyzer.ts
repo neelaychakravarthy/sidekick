@@ -229,6 +229,7 @@ export const analyzer = inngest.createFunction(
       const user = buildAnalyzerUserPrompt({
         groupName: group.name,
         triggerText: text ?? "",
+        autoReplyEnabled: group.autoReplyEnabled ?? false,
         contextMessages: contextMessages.map((m) => ({
           sender:
             m.displayName ??

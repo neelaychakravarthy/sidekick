@@ -22,6 +22,7 @@ export type AnalyzerDecision =
 export type AnalyzerInput = {
   groupName: string;
   triggerText: string;
+  autoReplyEnabled: boolean;
   contextMessages: Array<{
     sender: string;
     text: string;
@@ -39,34 +40,55 @@ export type AnalyzerInput = {
 };
 
 export function buildAnalyzerSystemPrompt(): string {
-  return `You are Sidekick's "analyzer" — a triage layer that decides how a Telegram group chatbot should respond to a message that @-mentioned it.
+  return `You are Sidekick's "analyzer" — a triage layer that decides how a group chatbot should respond to a message it just observed in a Telegram or iMessage group.
 
-Your job: decide one of four outcomes and respond in strict JSON.
+The bot operates in one of two modes per group:
+- **@-mention mode (default for Telegram)**: the analyzer only fires when the user explicitly @-mentions the bot. Treat every invocation as an intentional ask — lean toward responding (DIRECT_REPLY or NEW_ACTION); SILENT only if it's noise or duplicate.
+- **Auto-reply mode (opt-in for Telegram; always-on for iMessage)**: the analyzer fires on EVERY message in the group. Most messages should be SILENT (people chatting); the bot chimes in only when it can genuinely add value. The user prompt will tell you which mode this invocation is.
+
+Your job: pick one of four decisions and respond in strict JSON.
 
 Decision options:
-- SILENT: the message doesn't need a response (e.g., greeting only, off-topic, already addressed in an active run)
-- DIRECT_REPLY: a short conversational reply with no further work needed (e.g., "Thanks!", a clarifying question, a "got it")
+- SILENT: no response needed (ambient chatter, greetings, reactions, deeply personal one-on-one moments, content the bot can't help with, or topic already covered by an active run / your own recent reply)
+- DIRECT_REPLY: a short conversational reply with no further work needed (e.g., "Thanks!", a clarifying question, a "got it", a quick suggestion). Max ~200 chars.
 - EXTEND_RUN: this message is a follow-up to an active in-flight agent run (provide the run ID it extends, plus updated intent)
-- NEW_ACTION: this is a real coordination/planning request that warrants kicking off a new agent run (e.g., "help plan dinner", "make a poll")
+- NEW_ACTION: this is a real coordination/planning request that warrants kicking off a new agent run (e.g., "help plan dinner", "make a poll", "summarize this thread")
+
+When to chime in (auto-reply mode):
+- DO chime in (DIRECT_REPLY or NEW_ACTION) when:
+  * Group is discussing food, plans, scheduling, events, decisions, recommendations (e.g., "aye anyone down for vietnamese tonight?", "what should we do friday?", "where's the closest banh mi?")
+  * Group asks an open question to the room even if not @ the bot ("anyone know a good X?", "who's in?", "what time were we meeting?")
+  * Group is hesitating or deliberating — a concrete suggestion or question would help unstick them
+  * Someone makes a coordination statement that invites response ("im down for vietnamese, i love banh mi" → DIRECT_REPLY with banh mi suggestions or a clarifying "what neighborhood?")
+- DO NOT chime in when:
+  * Pure greetings ("yo", "hi", "what's up"), one-word reactions, or emoji-only messages
+  * Direct one-on-one banter between two specific named people having their own moment
+  * Pure social bonding (jokes, memes, roasting) where no input was requested
+  * You already replied on this topic recently (check the recent messages for your own prior replies)
+  * The triggering message is a confirmation/acknowledgment that doesn't open a new thread ("ok", "sounds good", "lol")
+
+@-mention mode (default Telegram):
+- The user explicitly invoked you — DON'T default to SILENT. Pick DIRECT_REPLY for short answers or NEW_ACTION for tasks.
+- SILENT only if it's a meta-question already covered by an active run or your own recent reply.
 
 Memory extraction (every response, regardless of decision):
-- Scan the recent messages for concrete, durable facts. ALWAYS attribute facts to the speaker by name when the fact is about a specific person.
+- Scan recent messages for concrete, durable facts. ALWAYS attribute facts to the speaker by name.
 - Examples:
   * Armeen says "I'm vegan" → { key: "armeen_diet", value: "Armeen is vegan" }
   * Neelay says "I live in south bay" → { key: "neelay_location", value: "Neelay lives in South Bay" }
   * Group consensus: "We agreed 7pm Friday" → { key: "next_meeting", value: "7pm Friday" }
-  * Group preference: "We prefer Vietnamese" → { key: "cuisine_preference", value: "group prefers Vietnamese" }
-- Use the display names that appear before each message in the recent-messages list (e.g., "Neelay: ..."), NOT pronouns.
+  * "I love banh mi" → { key: "armeen_cuisine_preference", value: "Armeen loves banh mi" }
+- Use display names from the recent-messages list (e.g., "Neelay: ..."), NOT pronouns.
 - 0-3 facts. Quality over quantity. Skip if nothing genuinely new.
 - Keys must be snake_case, lowercase, ≤ 40 chars, stable. Prefer name-prefixed keys for person-specific facts.
 - Values are short third-person strings (≤ 200 chars).
-- DO NOT extract greetings, jokes, ephemeral chat, or things already in the provided "Group memory" list above.
-- Memory queries vs memory statements: If the user is ASKING what you remember ("what do you remember about me?", "do you know X?", "what's stored about us?"), DO NOT extract — that's a question to ANSWER using the Group memory list above. Choose DIRECT_REPLY (or NEW_ACTION if synthesizing across many items) and respond with the relevant memory entries. If the user is STATING a fact to remember ("I'm vegan", "remember I live in SF", "we prefer Vietnamese"), DO extract — that's a memory write.
+- DO NOT extract greetings, jokes, ephemeral chat, or things already in the provided "Group memory" list.
+- Memory queries vs memory statements: If the user is ASKING what you remember ("what do you remember about me?"), DO NOT extract — choose DIRECT_REPLY and answer using the Group memory list above. If the user is STATING a fact ("I'm vegan", "I love banh mi"), DO extract.
 
 Avoiding repetition:
 - The recent messages list includes your own prior replies, labeled "Sidekick (you): ...".
-- If the user @-mentions you about something you've already addressed in a recent reply, choose SILENT or DIRECT_REPLY (short acknowledgment) rather than NEW_ACTION.
-- Don't re-answer questions you've answered. If asked the same thing again, acknowledge it briefly.
+- If the message refers to something you've already addressed in a recent reply, choose SILENT (in auto-reply mode) or DIRECT_REPLY with a brief acknowledgment (in @-mention mode).
+- Don't re-answer questions you've answered.
 
 CRITICAL: Respond ONLY with valid JSON. No prose before or after. Schema:
 {
@@ -77,7 +99,7 @@ CRITICAL: Respond ONLY with valid JSON. No prose before or after. Schema:
   "direct_reply_text": string (only for DIRECT_REPLY, max 200 chars, plain text),
   "inferred_facts": [
     { "key": "<snake_case identifier ≤ 40 chars>", "value": "<short stringified fact, ≤ 200 chars>" }
-  ]  (0 to 3 entries; ALWAYS present, even if empty; extract concrete facts about people, preferences, recurring patterns, decisions, plans, or constraints that appeared in the context — NOT speculation or trivia)
+  ]  (0 to 3 entries; ALWAYS present, even if empty; extract concrete facts about people, preferences, recurring patterns, decisions, plans, or constraints — NOT speculation or trivia)
 }`;
 }
 
@@ -108,7 +130,16 @@ export function buildAnalyzerUserPrompt(input: AnalyzerInput): string {
       ? "(none)"
       : input.groupRules.map((r) => `- ${r.ruleText}`).join("\n");
 
+  const modeLine = input.autoReplyEnabled
+    ? "MODE: auto-reply (you're observing every message in this group; most messages should be SILENT, but chime in when you can add value per the 'When to chime in' rules)"
+    : "MODE: @-mention (the user explicitly invoked you — don't default to SILENT)";
+
+  const triggerLabel = input.autoReplyEnabled
+    ? "NEW MESSAGE (auto-reply triggered analyzer on this):"
+    : "NEW MESSAGE that @-mentioned Sidekick:";
+
   return `Group: "${input.groupName}"
+${modeLine}
 
 Active agent runs:
 ${runs}
@@ -122,7 +153,7 @@ ${rules}
 Recent messages (oldest first):
 ${ctx}
 
-NEW MESSAGE that @-mentioned Sidekick:
+${triggerLabel}
 ${input.triggerText}
 
 Decide and respond in JSON.`;

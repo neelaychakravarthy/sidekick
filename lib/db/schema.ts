@@ -122,6 +122,7 @@ export const groupMembers = pgTable(
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
+    optedOutAt: timestamp("opted_out_at", { withTimezone: true }),
   },
   (t) => ({
     groupTgUserUnique: uniqueIndex("group_members_group_tg_user").on(

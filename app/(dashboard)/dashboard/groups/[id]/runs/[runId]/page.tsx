@@ -72,13 +72,13 @@ export default async function RunDetailPage({
       <Button
         variant="ghost"
         nativeButton={false}
-        className="h-8 -ml-3"
+        className="h-11 -ml-3"
         render={<Link href={`/dashboard/groups/${id}`}>← {group.name}</Link>}
       />
       <h1 className="font-heading mt-2 mb-1 text-2xl font-semibold tracking-tight">
         {run.intentSummary ?? "(no summary)"}
       </h1>
-      <div className="mb-8 flex items-center gap-2 text-sm text-muted-foreground">
+      <div className="mb-8 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
         <span>{new Date(run.createdAt).toLocaleString()}</span>
         <span>·</span>
         <span
@@ -183,7 +183,7 @@ function StepRenderer({
             <ul className="space-y-1 text-sm">
               {facts.map((f, i) => (
                 <li key={i}>
-                  <span className="font-mono text-xs text-muted-foreground">
+                  <span className="font-mono text-xs text-muted-foreground break-all">
                     {f.key}:
                   </span>{" "}
                   {f.value}

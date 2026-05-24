@@ -69,6 +69,11 @@ if (!isCachedBot) {
     }
   });
 
+  // STOP/START opt-out commands. Whole-message regex with word-boundary
+  // anchors so "Stop the meeting" or "I need to stop now" don't trigger.
+  const STOP_RE = /^\s*stop\s*$/i;
+  const START_RE = /^\s*start\s*$/i;
+
   // Claim a group: links the Telegram group to the user who generated the token
   // from the dashboard. Must run BEFORE bot.on("message") — without next() the
   // chain stops, so claim text never falls through to message persistence.
@@ -228,22 +233,109 @@ if (!isCachedBot) {
     await ctx.reply(`🧠 Noted: ${attributedValue}`);
   });
 
+  // STOP: opt this speaker out of message logging in this group.
+  bot.hears(STOP_RE, async (ctx) => {
+    const chatType = ctx.chat.type;
+    if (chatType !== "group" && chatType !== "supergroup") return;
+    if (!ctx.from) return;
+
+    const chatId = ctx.chat.id.toString();
+    const group = await db.query.groups.findFirst({
+      where: eq(schema.groups.telegramChatId, chatId),
+    });
+    if (!group) return;
+
+    await upsertGroupMember(group.id, ctx.from);
+
+    await db
+      .update(schema.groupMembers)
+      .set({ optedOutAt: new Date() })
+      .where(
+        and(
+          eq(schema.groupMembers.groupId, group.id),
+          eq(schema.groupMembers.telegramUserId, ctx.from.id.toString()),
+        ),
+      );
+
+    const displayName = deriveDisplayName(ctx.from);
+    await ctx.reply(
+      `🤫 Got it, ${displayName} — I'll stop logging your messages and won't include them in context. Reply START to resume.`,
+    );
+  });
+
+  // START: re-enable message logging for this speaker in this group.
+  bot.hears(START_RE, async (ctx) => {
+    const chatType = ctx.chat.type;
+    if (chatType !== "group" && chatType !== "supergroup") return;
+    if (!ctx.from) return;
+
+    const chatId = ctx.chat.id.toString();
+    const group = await db.query.groups.findFirst({
+      where: eq(schema.groups.telegramChatId, chatId),
+    });
+    if (!group) return;
+
+    await upsertGroupMember(group.id, ctx.from);
+
+    await db
+      .update(schema.groupMembers)
+      .set({ optedOutAt: null })
+      .where(
+        and(
+          eq(schema.groupMembers.groupId, group.id),
+          eq(schema.groupMembers.telegramUserId, ctx.from.id.toString()),
+        ),
+      );
+
+    const displayName = deriveDisplayName(ctx.from);
+    await ctx.reply(
+      `👋 Welcome back, ${displayName} — I'll log your messages again.`,
+    );
+  });
+
   // New message in a group
   bot.on("message", async (ctx) => {
     const chatType = ctx.chat.type;
     if (chatType !== "group" && chatType !== "supergroup") return;
 
     const chatId = ctx.chat.id.toString();
-    const group = await db.query.groups.findFirst({
+    let group = await db.query.groups.findFirst({
       where: eq(schema.groups.telegramChatId, chatId),
     });
     if (!group) {
-      // Group not registered (race: bot received message before my_chat_member?)
-      // Skip persistence; future increment can backfill.
-      return;
+      // Self-heal: bot is in a group but we have no row (likely the bot was here
+      // before we started tracking, or the row was deleted via account wipe).
+      // Create one with registeredByUserId=null; user can re-claim from the
+      // dashboard.
+      const chatTitle = "title" in ctx.chat ? ctx.chat.title : "Unnamed group";
+      const inserted = await db
+        .insert(schema.groups)
+        .values({ telegramChatId: chatId, name: chatTitle })
+        .onConflictDoNothing()
+        .returning();
+      group =
+        inserted[0] ??
+        (await db.query.groups.findFirst({
+          where: eq(schema.groups.telegramChatId, chatId),
+        }));
+      if (!group) return; // shouldn't happen but guard anyway
     }
 
     await upsertGroupMember(group.id, ctx.from);
+
+    // Opt-out filter: if the speaker has opted out in this group, don't
+    // persist or analyze. Past messages remain (no historical scrub).
+    if (ctx.from) {
+      const member = await db.query.groupMembers.findFirst({
+        where: and(
+          eq(schema.groupMembers.groupId, group.id),
+          eq(schema.groupMembers.telegramUserId, ctx.from.id.toString()),
+        ),
+      });
+      if (member?.optedOutAt) {
+        return;
+      }
+    }
 
     const inserted = await db
       .insert(schema.messages)
@@ -283,12 +375,39 @@ if (!isCachedBot) {
     if (!editedMsg) return;
 
     const chatId = ctx.chat.id.toString();
-    const group = await db.query.groups.findFirst({
+    let group = await db.query.groups.findFirst({
       where: eq(schema.groups.telegramChatId, chatId),
     });
-    if (!group) return;
+    if (!group) {
+      // Self-heal: same pattern as in bot.on("message").
+      const chatTitle = "title" in ctx.chat ? ctx.chat.title : "Unnamed group";
+      const inserted = await db
+        .insert(schema.groups)
+        .values({ telegramChatId: chatId, name: chatTitle })
+        .onConflictDoNothing()
+        .returning();
+      group =
+        inserted[0] ??
+        (await db.query.groups.findFirst({
+          where: eq(schema.groups.telegramChatId, chatId),
+        }));
+      if (!group) return;
+    }
 
     await upsertGroupMember(group.id, ctx.from);
+
+    // Opt-out filter: edits from opted-out users are also skipped.
+    if (ctx.from) {
+      const member = await db.query.groupMembers.findFirst({
+        where: and(
+          eq(schema.groupMembers.groupId, group.id),
+          eq(schema.groupMembers.telegramUserId, ctx.from.id.toString()),
+        ),
+      });
+      if (member?.optedOutAt) {
+        return;
+      }
+    }
 
     await db
       .update(schema.messages)

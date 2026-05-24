@@ -68,7 +68,7 @@ export default async function GroupDetailPage({
           <Button
             variant="ghost"
             nativeButton={false}
-            className="h-8 -ml-3"
+            className="h-11 -ml-3"
             render={<Link href="/dashboard">← Dashboard</Link>}
           />
           <h1 className="font-heading mt-1 text-3xl font-semibold tracking-tight">
@@ -131,7 +131,7 @@ export default async function GroupDetailPage({
               <ul className="space-y-3 text-sm">
                 {memory.map((m) => (
                   <li key={m.id}>
-                    <div className="font-mono text-xs text-muted-foreground">
+                    <div className="font-mono text-xs text-muted-foreground break-all">
                       {m.key}
                     </div>
                     <div>

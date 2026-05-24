@@ -25,7 +25,7 @@ export function DeleteAccountForm() {
           type="text"
           value={text}
           onChange={(e) => setText(e.target.value)}
-          className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="mt-1 block h-11 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
           placeholder="DELETE"
           autoComplete="off"
         />

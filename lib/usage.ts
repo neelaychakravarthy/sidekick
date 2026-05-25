@@ -56,7 +56,7 @@ export async function checkAndIncrementUsage(
         updatedAt: now,
       })
       .where(
-        sql`${schema.users.id} = ${userId} AND ${schema.users.dailyLlmCallResetAt} <= ${now}`,
+        sql`${schema.users.id} = ${userId} AND ${schema.users.dailyLlmCallResetAt} <= ${now.toISOString()}`,
       );
 
     const [u] = await tx

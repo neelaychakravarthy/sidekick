@@ -22,7 +22,7 @@ export type AnalyzerDecision =
 export type AnalyzerInput = {
   groupName: string;
   triggerText: string;
-  autoReplyEnabled: boolean;
+  mode: "mention" | "autoreply" | "passive";
   contextMessages: Array<{
     sender: string;
     text: string;
@@ -42,9 +42,13 @@ export type AnalyzerInput = {
 export function buildAnalyzerSystemPrompt(): string {
   return `You are Sidekick's "analyzer" — a triage layer that decides how a group chatbot should respond to a message it just observed in a Telegram or iMessage group.
 
-The bot operates in one of two modes per group:
-- **@-mention mode (default for Telegram)**: the analyzer only fires when the user explicitly @-mentions the bot. Treat every invocation as an intentional ask — lean toward responding (DIRECT_REPLY or NEW_ACTION); SILENT only if it's noise or duplicate.
-- **Auto-reply mode (opt-in for Telegram; always-on for iMessage)**: the analyzer fires on EVERY message in the group. Most messages should be SILENT (people chatting); the bot chimes in only when it can genuinely add value. The user prompt will tell you which mode this invocation is.
+The bot operates in one of three modes per analyzer invocation. The user prompt's MODE: line tells you which one applies:
+
+- **@-mention mode**: the user explicitly @-mentioned the bot. Treat as an intentional ask — DON'T default to SILENT. Pick DIRECT_REPLY for short answers, NEW_ACTION for tasks, EXTEND_RUN if continuing an in-flight run. SILENT only if a duplicate of your own recent reply.
+
+- **Auto-reply mode** (toggled on for Telegram; always for iMessage): the analyzer fires on EVERY message. Most should be SILENT — people chatting. Chime in when you can genuinely add value per the "When to chime in" rules.
+
+- **Passive mode**: the analyzer is observing this message but the user did NOT @-mention you AND auto-reply is OFF. You are here ONLY to extract memory. **The decision MUST be SILENT** — no DIRECT_REPLY, no NEW_ACTION, no EXTEND_RUN, ever. Even if the user said something that would normally trigger a response, stay SILENT. The user didn't ask for input. Run memory extraction normally — that's the entire reason you were invoked.
 
 Your job: pick one of four decisions and respond in strict JSON.
 
@@ -66,6 +70,8 @@ When to chime in (auto-reply mode):
   * Pure social bonding (jokes, memes, roasting) where no input was requested
   * You already replied on this topic recently (check the recent messages for your own prior replies)
   * The triggering message is a confirmation/acknowledgment that doesn't open a new thread ("ok", "sounds good", "lol")
+
+These chime-in rules apply ONLY in auto-reply mode. In passive mode, never chime in regardless of the message content.
 
 @-mention mode (default Telegram):
 - The user explicitly invoked you — DON'T default to SILENT. Pick DIRECT_REPLY for short answers or NEW_ACTION for tasks.
@@ -130,13 +136,26 @@ export function buildAnalyzerUserPrompt(input: AnalyzerInput): string {
       ? "(none)"
       : input.groupRules.map((r) => `- ${r.ruleText}`).join("\n");
 
-  const modeLine = input.autoReplyEnabled
-    ? "MODE: auto-reply (you're observing every message in this group; most messages should be SILENT, but chime in when you can add value per the 'When to chime in' rules)"
-    : "MODE: @-mention (the user explicitly invoked you — don't default to SILENT)";
-
-  const triggerLabel = input.autoReplyEnabled
-    ? "NEW MESSAGE (auto-reply triggered analyzer on this):"
-    : "NEW MESSAGE that @-mentioned Sidekick:";
+  let modeLine: string;
+  let triggerLabel: string;
+  switch (input.mode) {
+    case "mention":
+      modeLine =
+        "MODE: @-mention (the user explicitly invoked you — don't default to SILENT)";
+      triggerLabel = "NEW MESSAGE that @-mentioned Sidekick:";
+      break;
+    case "autoreply":
+      modeLine =
+        "MODE: auto-reply (you're observing every message; chime in proactively if you can add value, otherwise SILENT)";
+      triggerLabel = "NEW MESSAGE (auto-reply triggered analyzer on this):";
+      break;
+    case "passive":
+      modeLine =
+        "MODE: passive observation (user did NOT @-mention you, auto-reply is OFF — your decision MUST be SILENT; you're here only to extract memory)";
+      triggerLabel =
+        "NEW MESSAGE (passive observation — for memory only, no response):";
+      break;
+  }
 
   return `Group: "${input.groupName}"
 ${modeLine}

@@ -90,42 +90,29 @@ export const analyzer = inngest.createFunction(
       });
     });
 
-    // Mention gate: Telegram-only. When auto_reply_enabled is true on the group,
-    // skip the gate (analyze every message, just like iMessage). iMessage has no
-    // @-mention concept, so it's always treated as auto-reply on.
-    const skipMentionGate =
+    // Mode derivation. The analyzer ALWAYS runs the LLM now — the early-return
+    // for non-@-mention messages was removed so memory extraction can fire on
+    // every message. iMessage has no @-mention concept (always autoreply).
+    // Passive mode is observation-only: SILENT decision enforced downstream.
+    const botUsername = await step.run("resolve-bot-username", () =>
+      resolveBotUsername(),
+    );
+    const wasExplicitlyMentioned =
+      groupForPlatform.platform === "telegram" &&
+      messageMentionsBot(text ?? "", botUsername);
+    let mode: "mention" | "autoreply" | "passive";
+    if (
       groupForPlatform.platform === "imessage" ||
-      groupForPlatform.autoReplyEnabled;
-
-    if (!skipMentionGate) {
-      // Skip non-@-mention messages early (MVP behavior; proactive intervention is V2).
-      const botUsername = await step.run("resolve-bot-username", () =>
-        resolveBotUsername(),
-      );
-      if (!messageMentionsBot(text, botUsername)) {
-        await step.run("mark-silent-no-mention", async () => {
-          await db
-            .update(schema.agentRuns)
-            .set({
-              status: "responded",
-              decision: "silent",
-              reasoning: "not @-mentioned",
-              respondedAt: new Date(),
-              updatedAt: new Date(),
-            })
-            .where(eq(schema.agentRuns.id, runId));
-        });
-        await step.run("log-analyzer-decision-no-mention", async () => {
-          await logStep(runId, "analyzer_decision", {
-            decision: "SILENT",
-            reason: "no_mention",
-          });
-        });
-        return { decision: "SILENT", reason: "no_mention", runId };
-      }
+      groupForPlatform.autoReplyEnabled
+    ) {
+      mode = "autoreply";
+    } else if (wasExplicitlyMentioned) {
+      mode = "mention";
+    } else {
+      mode = "passive";
     }
 
-    logger.info("[analyzer] bot @-mentioned", { groupId, messageId });
+    logger.info("[analyzer] mode resolved", { groupId, messageId, mode });
 
     // Pull context: last N messages (capped by N min), active agent_runs, memory, rules, group meta.
     const cutoff = new Date(Date.now() - CONTEXT_WINDOW_MINUTES * 60_000);
@@ -229,7 +216,7 @@ export const analyzer = inngest.createFunction(
       const user = buildAnalyzerUserPrompt({
         groupName: group.name,
         triggerText: text ?? "",
-        autoReplyEnabled: group.autoReplyEnabled ?? false,
+        mode,
         contextMessages: contextMessages.map((m) => ({
           sender:
             m.displayName ??
@@ -280,11 +267,26 @@ export const analyzer = inngest.createFunction(
       };
     });
 
-    const decision = llmResult.decision;
+    const parsedDecision = llmResult.decision;
     const thinkingText = llmResult.thinkingText;
     const analyzerSystemPrompt = llmResult.systemPrompt;
     const analyzerUserPrompt = llmResult.userPrompt;
     const analyzerRawText = llmResult.rawText;
+
+    // Defensive: passive mode must always be SILENT. Coerce if the LLM ignored
+    // the instruction. `inferredFacts` is preserved so memory still gets
+    // extracted in the SILENT branch below. The forced-silent reason is also
+    // captured so the agent_runs row reflects what happened.
+    const forcedSilentReason =
+      mode === "passive" && parsedDecision.kind !== "SILENT"
+        ? `(forced silent — LLM returned ${parsedDecision.kind} in passive mode)`
+        : null;
+    const decision = forcedSilentReason
+      ? {
+          kind: "SILENT" as const,
+          inferredFacts: parsedDecision.inferredFacts,
+        }
+      : parsedDecision;
 
     logger.info("[analyzer] decision", { decision: decision.kind, groupId });
 
@@ -418,8 +420,10 @@ export const analyzer = inngest.createFunction(
     // Reasoning for the activity-row display. Prefer the actual thinking text
     // (truncated for the column) so SILENT rows are informative instead of a
     // generic placeholder. Empty-thinking fallback keeps the column readable.
-    const silentReasoning =
-      thinkingText.length > 0
+    // When coercion forced SILENT in passive mode, surface that prefix.
+    const silentReasoning = forcedSilentReason
+      ? `${forcedSilentReason}${thinkingText.length > 0 ? ` — ${thinkingText.slice(0, 400)}` : ""}`
+      : thinkingText.length > 0
         ? thinkingText.slice(0, 500)
         : "model returned SILENT";
 
@@ -440,10 +444,12 @@ export const analyzer = inngest.createFunction(
       await step.run("log-analyzer-decision-silent", async () => {
         await logStep(runId, "analyzer_decision", {
           decision: "SILENT",
+          mode,
           thinking: thinkingText,
           system_prompt: analyzerSystemPrompt,
           user_prompt: analyzerUserPrompt,
           raw_response: analyzerRawText,
+          forced_silent_reason: forcedSilentReason,
         });
       });
       return { decision: "SILENT", reason: "llm", runId };
@@ -485,6 +491,7 @@ export const analyzer = inngest.createFunction(
       await step.run("log-analyzer-decision-direct", async () => {
         await logStep(runId, "analyzer_decision", {
           decision: "DIRECT_REPLY",
+          mode,
           text: decision.text,
           thinking: thinkingText,
           system_prompt: analyzerSystemPrompt,
@@ -527,6 +534,7 @@ export const analyzer = inngest.createFunction(
       await step.run("log-analyzer-decision-extend", async () => {
         await logStep(runId, "analyzer_decision", {
           decision: "EXTEND_RUN",
+          mode,
           extends_run_id: decision.extendsRunId,
           intent_summary: decision.intentSummary,
           intent_keywords: decision.intentKeywords,
@@ -546,6 +554,7 @@ export const analyzer = inngest.createFunction(
       await step.run("log-analyzer-decision-on-target", async () => {
         await logStep(decision.extendsRunId, "analyzer_decision", {
           decision: "EXTEND_RUN",
+          mode,
           intent_summary: decision.intentSummary,
           intent_keywords: decision.intentKeywords,
           thinking: thinkingText,
@@ -589,6 +598,7 @@ export const analyzer = inngest.createFunction(
     await step.run("log-analyzer-decision-new-action", async () => {
       await logStep(runId, "analyzer_decision", {
         decision: decision.kind,
+        mode,
         intent_summary: decision.intentSummary,
         intent_keywords: decision.intentKeywords,
         thinking: thinkingText,

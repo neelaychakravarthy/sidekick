@@ -207,8 +207,11 @@ export async function POST(req: Request) {
         .returning({ id: schema.messages.id });
 
   if (inserted.length > 0) {
+    // iMessage has no @-mention concept — always route through the ambient
+    // (debounced) analyzer path. SILENT decisions filter ambient chatter
+    // downstream.
     await inngest.send({
-      name: "message.received",
+      name: "message.received.ambient",
       data: {
         groupId: group.id,
         messageId: inserted[0].id,

@@ -307,6 +307,38 @@ function StepTimelineRow({
             title="Reasoning (Claude's chain-of-thought)"
             content={thinking}
           />
+          {Array.isArray(payload.context_messages) &&
+            (payload.context_messages as unknown[]).length > 0 && (
+              <details open className="mt-2 text-xs">
+                <summary className="cursor-pointer font-medium text-foreground hover:text-muted-foreground">
+                  Conversation context (
+                  {(payload.context_messages as unknown[]).length} messages)
+                </summary>
+                <ul className="mt-1 space-y-0.5 rounded bg-muted/30 p-2 text-[10px]">
+                  {(
+                    payload.context_messages as Array<{
+                      sender: string;
+                      text: string;
+                      ts: string;
+                      isBot: boolean;
+                    }>
+                  ).map((m, i) => (
+                    <li key={i}>
+                      <span
+                        className={
+                          m.isBot
+                            ? "text-violet-600 dark:text-violet-400"
+                            : "text-muted-foreground"
+                        }
+                      >
+                        {m.isBot ? "Sidekick (you)" : m.sender}:
+                      </span>{" "}
+                      {m.text}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
           <CollapsibleBlock title="System prompt" content={systemPrompt} />
           <CollapsibleBlock title="User prompt" content={userPrompt} />
           <CollapsibleBlock title="Raw response" content={rawResponse} />

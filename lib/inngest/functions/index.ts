@@ -1,4 +1,4 @@
 import { agentExecutor } from "./agent-executor";
-import { analyzer } from "./analyzer";
+import { analyzerAmbient, analyzerMention } from "./analyzer";
 
-export const functions = [analyzer, agentExecutor];
+export const functions = [analyzerMention, analyzerAmbient, agentExecutor];

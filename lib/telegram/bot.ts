@@ -10,6 +10,19 @@ declare global {
   var __sidekick_bot: Bot | undefined;
 }
 
+// Whether a Telegram message text contains an @-mention of the bot. Used both
+// at the webhook edge (to branch event routing into mention vs ambient
+// streams) and inside the analyzer for defensive sanity checks. Word-boundary
+// on the right so "@SidekickBotXYZ" doesn't match "@SidekickBot".
+export function messageMentionsBot(
+  text: string | null,
+  botUsername: string,
+): boolean {
+  if (!text || !botUsername) return false;
+  const re = new RegExp(`@${botUsername}\\b`, "i");
+  return re.test(text);
+}
+
 // Build-time-safe: use a placeholder token if missing.
 // grammy's Bot constructor does NOT validate the token — it just stores it.
 // Actual API calls (ctx.reply, etc.) are where token validation happens, so
@@ -359,23 +372,36 @@ if (!isCachedBot) {
       .onConflictDoNothing()
       .returning({ id: schema.messages.id });
 
-    // Only emit Inngest event if this is a new message (not a duplicate Telegram retry)
+    // Only emit Inngest event if this is a new message (not a duplicate Telegram retry).
+    // Detect @-mention at the edge so we can route to the no-debounce mention path.
+    // The fallback (env unset → treat as ambient) keeps behavior safe but degraded.
     if (inserted.length > 0) {
+      const text = ctx.msg.text ?? null;
+      const botUsernameEnv = process.env.TELEGRAM_BOT_USERNAME?.trim() ?? "";
+      const botUsername = botUsernameEnv.startsWith("@")
+        ? botUsernameEnv.slice(1)
+        : botUsernameEnv;
+      const mentioned = botUsername
+        ? messageMentionsBot(text, botUsername)
+        : false;
+      const eventName = mentioned
+        ? "message.received.mention"
+        : "message.received.ambient";
       await inngest.send({
-        name: "message.received",
+        name: eventName,
         data: {
           groupId: group.id,
           messageId: inserted[0].id,
           telegramMessageId: ctx.msg.message_id.toString(),
-          text: ctx.msg.text ?? null,
+          text,
         },
       });
     }
   });
 
   // Edited message in a group — update the stored row. We don't re-emit
-  // message.received: edits are rare and the analyzer already processed the
-  // original; re-running would create duplicate ack messages.
+  // message.received.*: edits are rare and the analyzer already processed
+  // the original; re-running would create duplicate ack messages.
   bot.on("edited_message", async (ctx) => {
     const chatType = ctx.chat.type;
     if (chatType !== "group" && chatType !== "supergroup") return;

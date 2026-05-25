@@ -1,7 +1,11 @@
 import { and, desc, eq, gte, inArray } from "drizzle-orm";
 
 import { logStep } from "@/lib/agent-steps";
-import { ANTHROPIC_MODEL, getAnthropic } from "@/lib/anthropic";
+import {
+  ANTHROPIC_MODEL,
+  buildAnthropicClient,
+  resolveAnthropicSelection,
+} from "@/lib/anthropic";
 import { db, schema } from "@/lib/db";
 import { inngest } from "@/lib/inngest/client";
 import { sendMessage, type SendArgs } from "@/lib/messaging";
@@ -148,6 +152,89 @@ export const agentExecutor = inngest.createFunction(
       });
     });
 
+    // Pick the right Anthropic key for this group's owner. If they have their
+    // own key, use it (no rate limit). Else atomically check+increment the
+    // daily free-tier counter and short-circuit if over cap. The step returns
+    // a serializable shape; we build the actual client outside the step
+    // (Anthropic instances don't survive serialization).
+    const clientSelection = await step.run("pick-anthropic-client", async () => {
+      return await resolveAnthropicSelection(ctx.group.registeredByUserId);
+    });
+
+    if (clientSelection.source === "rate_limited") {
+      const { count, limit } = clientSelection;
+      await step.run("mark-rate-limited", async () => {
+        await db
+          .update(schema.agentRuns)
+          .set({
+            status: "failed",
+            errorText: `rate limited (free tier daily cap reached, ${count}/${limit})`,
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.agentRuns.id, runId));
+      });
+      await step.run("log-rate-limited", async () => {
+        await logStep(runId, "error", {
+          where: "rate_limit",
+          count,
+          limit,
+        });
+      });
+      // One-per-UTC-day group notice with the dashboard link.
+      await step.run("maybe-post-rate-limit-notice", async () => {
+        const fresh = await db.query.groups.findFirst({
+          where: eq(schema.groups.id, groupId),
+        });
+        if (!fresh) return;
+        const now = new Date();
+        const todayUtcMidnight = new Date(
+          Date.UTC(
+            now.getUTCFullYear(),
+            now.getUTCMonth(),
+            now.getUTCDate(),
+            0,
+            0,
+            0,
+            0,
+          ),
+        );
+        const alreadyToday =
+          fresh.rateLimitNotifiedAt != null &&
+          new Date(fresh.rateLimitNotifiedAt).getTime() >=
+            todayUtcMidnight.getTime();
+        if (alreadyToday) return;
+        const base = process.env.NEXTAUTH_URL ?? "";
+        const url = `${base}/dashboard/account`;
+        const text = `⚠️ Daily free-tier limit hit (${count}/${limit} calls). Add your Anthropic API key at ${url} to keep using me today, or wait until UTC midnight.`;
+        try {
+          if (fresh.platform === "imessage") {
+            if (!fresh.photonSpaceId) return;
+            await sendMessage({
+              platform: "imessage",
+              photonSpaceId: fresh.photonSpaceId,
+              groupId: fresh.id,
+              text,
+            });
+          } else {
+            if (!fresh.telegramChatId) return;
+            await sendMessage({
+              platform: "telegram",
+              telegramChatId: fresh.telegramChatId,
+              groupId: fresh.id,
+              text,
+            });
+          }
+          await db
+            .update(schema.groups)
+            .set({ rateLimitNotifiedAt: now, updatedAt: now })
+            .where(eq(schema.groups.id, fresh.id));
+        } catch (err) {
+          logger.warn("[agent-executor] rate-limit notice send failed", { err });
+        }
+      });
+      return { runId, status: "rate_limited", count, limit };
+    }
+
     // Call Claude for the final response.
     // Note: the `log-agent-llm-call` step that previously ran here (with just
     // {model}) has moved to AFTER the LLM call so we can log the full payload
@@ -179,7 +266,12 @@ export const agentExecutor = inngest.createFunction(
     let llmResult: AgentLlmResult;
     try {
       llmResult = await step.run("agent-llm", async () => {
-        const client = getAnthropic();
+        // Build the client INSIDE the step so the user's plaintext key
+        // (when source:"user") never crosses an Inngest checkpoint boundary.
+        const client = await buildAnthropicClient(
+          clientSelection,
+          ctx.group.registeredByUserId,
+        );
         const systemPrompt = buildAgentSystemPrompt();
         const userPrompt = buildAgentUserPrompt({
           groupName: ctx.group.name,

@@ -37,6 +37,22 @@ export const users = pgTable("users", {
   googleId: text("google_id").unique(),
   name: text("name"),
   image: text("image"),
+  // BYO Anthropic API key — encrypted with AES-256-GCM via lib/encryption.ts.
+  // Format: base64(iv || ciphertext || authTag) in a single column. Never
+  // exposed to the client. When non-null, LLM calls for groups owned by this
+  // user use this key and bypass the daily rate limit.
+  anthropicApiKeyEncrypted: text("anthropic_api_key_encrypted"),
+  anthropicApiKeyAddedAt: timestamp("anthropic_api_key_added_at", {
+    withTimezone: true,
+  }),
+  // Daily free-tier rate-limit counters. Reset is "next UTC midnight" after
+  // the previous reset. See lib/usage.ts for the atomic check+increment.
+  dailyLlmCallCount: integer("daily_llm_call_count").notNull().default(0),
+  dailyLlmCallResetAt: timestamp("daily_llm_call_reset_at", {
+    withTimezone: true,
+  })
+    .defaultNow()
+    .notNull(),
   createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()
     .notNull(),
@@ -104,6 +120,11 @@ export const groups = pgTable("groups", {
     .notNull()
     .default({}),
   autoReplyEnabled: boolean("auto_reply_enabled").notNull().default(false),
+  // Last time the rate-limit "add your own key" notice was posted in this
+  // group. Used to dedup notices to once-per-UTC-day. Null = never posted.
+  rateLimitNotifiedAt: timestamp("rate_limit_notified_at", {
+    withTimezone: true,
+  }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()
     .notNull(),

@@ -1,7 +1,11 @@
 import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 
 import { logStep } from "@/lib/agent-steps";
-import { ANTHROPIC_MODEL, getAnthropic } from "@/lib/anthropic";
+import {
+  ANTHROPIC_MODEL,
+  buildAnthropicClient,
+  resolveAnthropicSelection,
+} from "@/lib/anthropic";
 import { db, schema } from "@/lib/db";
 import { embed, serializeEmbedding } from "@/lib/embeddings";
 import { inngest } from "@/lib/inngest/client";
@@ -227,9 +231,100 @@ async function runAnalyzer({
     isBot: m.isBot,
   }));
 
-  // Call Claude for the decision.
+  // Pick the right Anthropic key for this group's owner. If they have their
+  // own key, this returns it (no per-call rate limit). Else it atomically
+  // check+increments the daily free-tier counter — short-circuit if over cap.
+  // The step returns a serializable shape; the actual Anthropic client is
+  // built outside the step (Anthropic instances don't survive serialization).
+  const clientSelection = await step.run("pick-anthropic-client", async () => {
+    return await resolveAnthropicSelection(group.registeredByUserId);
+  });
+
+  if (clientSelection.source === "rate_limited") {
+    const { count, limit } = clientSelection;
+    await step.run("mark-rate-limited", async () => {
+      await db
+        .update(schema.agentRuns)
+        .set({
+          status: "responded",
+          decision: "silent",
+          reasoning: `rate limited (free tier daily cap reached, ${count}/${limit})`,
+          respondedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.agentRuns.id, runId));
+    });
+    await step.run("log-rate-limited", async () => {
+      await logStep(runId, "error", {
+        where: "rate_limit",
+        count,
+        limit,
+      });
+    });
+    // One-per-UTC-day notice in the group chat. Re-load the group inside the
+    // step so the check sees any concurrent update to rateLimitNotifiedAt.
+    await step.run("maybe-post-rate-limit-notice", async () => {
+      const fresh = await db.query.groups.findFirst({
+        where: eq(schema.groups.id, groupId),
+      });
+      if (!fresh) return;
+      const now = new Date();
+      const todayUtcMidnight = new Date(
+        Date.UTC(
+          now.getUTCFullYear(),
+          now.getUTCMonth(),
+          now.getUTCDate(),
+          0,
+          0,
+          0,
+          0,
+        ),
+      );
+      const alreadyToday =
+        fresh.rateLimitNotifiedAt != null &&
+        new Date(fresh.rateLimitNotifiedAt).getTime() >=
+          todayUtcMidnight.getTime();
+      if (alreadyToday) return;
+      const base = process.env.NEXTAUTH_URL ?? "";
+      const url = `${base}/dashboard/account`;
+      const text = `⚠️ Daily free-tier limit hit (${count}/${limit} calls). Add your Anthropic API key at ${url} to keep using me today, or wait until UTC midnight.`;
+      try {
+        if (fresh.platform === "imessage") {
+          if (!fresh.photonSpaceId) return;
+          await sendMessage({
+            platform: "imessage",
+            photonSpaceId: fresh.photonSpaceId,
+            groupId: fresh.id,
+            text,
+          });
+        } else {
+          if (!fresh.telegramChatId) return;
+          await sendMessage({
+            platform: "telegram",
+            telegramChatId: fresh.telegramChatId,
+            groupId: fresh.id,
+            text,
+          });
+        }
+        await db
+          .update(schema.groups)
+          .set({ rateLimitNotifiedAt: now, updatedAt: now })
+          .where(eq(schema.groups.id, fresh.id));
+      } catch (err) {
+        logger.warn("[analyzer] rate-limit notice send failed", { err });
+      }
+    });
+    return { decision: "SILENT", reason: "rate_limited", runId, count, limit };
+  }
+
+  // Call Claude for the decision. The client is built INSIDE this step so
+  // the user's plaintext key (when on source:"user") never crosses an
+  // Inngest step-checkpoint boundary.
   const llmResult = await step.run("analyzer-llm", async () => {
-    const client = getAnthropic();
+    const client = await buildAnthropicClient(
+      clientSelection,
+      group.registeredByUserId,
+    );
     const system = buildAnalyzerSystemPrompt();
     const user = buildAnalyzerUserPrompt({
       groupName: group.name,

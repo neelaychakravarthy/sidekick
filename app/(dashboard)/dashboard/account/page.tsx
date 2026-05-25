@@ -3,6 +3,7 @@ import Link from "next/link"
 import { redirect } from "next/navigation"
 
 import { auth } from "@/auth"
+import { AnthropicKeySection } from "@/components/anthropic-key-section"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -12,6 +13,7 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { db, schema } from "@/lib/db"
+import { getDailyLlmCallLimit } from "@/lib/usage"
 
 import { DeleteAccountForm } from "./delete-form"
 
@@ -45,6 +47,37 @@ export default async function AccountPage() {
       .where(eq(schema.groups.registeredByUserId, userId))
       .then((r) => r[0]?.n ?? 0),
   ])
+
+  const hasAnthropicKey = !!user?.anthropicApiKeyEncrypted
+  const dailyLimit = getDailyLlmCallLimit()
+  // If the stored reset time is already in the past, the next reset is at
+  // the upcoming UTC midnight; the actual write happens on the next usage
+  // check. Counter "today" can be stale in that case — show 0 for clarity.
+  const now = new Date()
+  const resetAt = user?.dailyLlmCallResetAt
+    ? new Date(user.dailyLlmCallResetAt)
+    : now
+  const effectiveResetAt =
+    resetAt.getTime() <= now.getTime()
+      ? new Date(
+          Date.UTC(
+            now.getUTCFullYear(),
+            now.getUTCMonth(),
+            now.getUTCDate() + 1,
+            0,
+            0,
+            0,
+            0,
+          ),
+        )
+      : resetAt
+  const effectiveCount =
+    resetAt.getTime() <= now.getTime() ? 0 : user?.dailyLlmCallCount ?? 0
+  const diffMs = Math.max(0, effectiveResetAt.getTime() - now.getTime())
+  const hours = Math.floor(diffMs / 3_600_000)
+  const mins = Math.floor((diffMs % 3_600_000) / 60_000)
+  const resetCountdown =
+    hours > 0 ? `${hours}h ${mins}m` : mins > 0 ? `${mins}m` : "<1m"
 
   return (
     <div className="container mx-auto max-w-2xl px-4 py-8 md:py-12">
@@ -94,6 +127,18 @@ export default async function AccountPage() {
           </dl>
         </CardContent>
       </Card>
+
+      <AnthropicKeySection
+        hasKey={hasAnthropicKey}
+        addedAt={
+          user?.anthropicApiKeyAddedAt
+            ? new Date(user.anthropicApiKeyAddedAt).toISOString()
+            : null
+        }
+        dailyCount={effectiveCount}
+        dailyLimit={dailyLimit}
+        resetCountdown={resetCountdown}
+      />
 
       <Card className="border-destructive/40">
         <CardHeader>

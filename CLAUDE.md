@@ -16,13 +16,15 @@ Hackathon project for the **Eazo Creator Hackathon** (May 23–24, 2026, SF). Se
 - **Test:** none in MVP scope; add as needed
 - **Lint / typecheck:** `pnpm typecheck && pnpm lint`
 - **Build (deployable-state check):** `pnpm build` — must succeed before pushing
-- **Migrate DB:** `pnpm drizzle-kit push:pg` against local Postgres OR remote Vercel Postgres / Eazo DB once connected
-- **Deploy (Phase 1 — Vercel, active now):**
-  1. `git push` to GitHub
-  2. Vercel auto-deploys on push (set up once: connect GitHub repo to Vercel project, add env vars, add Vercel Postgres)
-  3. Live at `https://sidekick-<hash>.vercel.app`
-  4. Update Telegram bot webhook to the Vercel URL after first deploy
-- **Deploy (Phase 2 — Eazo, once Eazo Mobile is live):**
+- **Migrate DB:** `pnpm db:push` against local Postgres OR remote Neon once connected. CI/prod-deploy uses `pnpm db:push:ci` (`drizzle-kit push --force`, non-interactive). drizzle-kit prefers `DIRECT_DATABASE_URL` (Neon unpooled) for DDL, falling back to `DATABASE_URL`.
+- **Deploy (Vercel — primary, active now):**
+  1. `git push` to GitHub `main` (or open a PR for a preview deploy)
+  2. Vercel auto-deploys via native Git integration (set up once: connect GitHub repo to Vercel project, add env vars incl. Neon `DATABASE_URL`). Push to `main` → production; PRs → preview.
+  3. GitHub Actions (`.github/workflows/ci.yml`) runs typecheck + lint + build on push/PR. Actions does NOT deploy — Vercel's Git integration does.
+  4. `vercel.json` runs `db:push:ci` before build on **production** deploys only (`VERCEL_ENV=production`); previews skip the migration. ⚠️ `--force` auto-applies data-loss schema changes on prod deploy — review schema diffs before merging to `main`.
+  5. Live at `https://sidekick-<hash>.vercel.app`. Update Telegram bot webhook to the Vercel URL after first deploy.
+- **Deploy (Eazo — deferred, platform 502):**
+  - Blocked: `import_project` deploy API returns 502 (platform-side outage as of 2026-05-28, not our code). Code stays Eazo-compatible. When unblocked:
   1. Push final code to GitHub (already there)
   2. In Eazo chat: `import_project <repo-url>`
   3. Eazo wires env vars + build check
@@ -42,9 +44,9 @@ Hackathon project for the **Eazo Creator Hackathon** (May 23–24, 2026, SF). Se
 ## Conventions
 
 - **No drive-by refactors.** Increment scope is whatever `/ship-it` (or `/debug`) plan said. Don't expand silently. The `implementor` agent enforces this — if you want to "clean this up while I'm here," report it as a follow-up instead.
-- **Two-phase deploy is the project model.** Phase 1: Vercel (active now — Eazo Mobile not yet live). Phase 2: Eazo `import_project` once accessible. Both targets share the same code; don't introduce anything that breaks one. Specifically: anything that breaks Eazo's import path is OUT — custom Dockerfiles, non-Vercel-compatible deps, long-lived Node daemons. Use Inngest for any async work.
+- **Vercel is the active deploy target; Eazo is deferred (platform 502).** Vercel runs production now via native Git integration (Neon DB). Eazo's `import_project` is blocked on a platform outage — keep the code Eazo-compatible so it can be imported later. Both targets share the same code; don't introduce anything that breaks one. Specifically: anything that breaks Eazo's import path is OUT — custom Dockerfiles, non-Vercel-compatible deps, long-lived Node daemons. Use Inngest for any async work.
 - **Drizzle ORM is required.** Eazo's Postgres provisioning expects drizzle-kit migrations at build time. Don't introduce Prisma / TypeORM / raw SQL migrations.
-- **No long-running Node processes.** Webhooks must ACK fast and dispatch async work via Inngest events. No `setInterval`/`setTimeout` polling loops anywhere. Vercel serverless function timeouts (10s on hobby tier, 60s on pro) apply.
+- **No long-running Node processes.** Webhooks must ACK fast and dispatch async work via Inngest events. No `setInterval`/`setTimeout` polling loops anywhere. Vercel serverless function timeouts apply (Hobby ceiling now 300s; the Inngest endpoint sets `maxDuration = 300` for the agent's long LLM steps).
 - **Mobile-first UI.** Every new component must be designed at iPhone width (~390px) first; desktop is a secondary breakpoint, not the primary canvas. Tailwind default classes target mobile; use `sm:` / `md:` / `lg:` to enhance for larger screens. Tap targets ≥ 44px.
 - **Always post acknowledgment messages.** Per SPEC.md required behaviors: before *any* heavy agent work, post an "👀 looking into X" message to chat first. Users and group members rely on this signal — without it they re-ask and we kick off duplicate runs.
 - **Always check dedup before creating a new `agent_runs` row.** Active runs for the group must be inspected first. Append to existing run if intent overlaps.

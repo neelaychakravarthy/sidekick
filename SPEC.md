@@ -29,36 +29,40 @@ MVP demo flow: user registers in the Sidekick web app (control plane), gets inst
 
 ## Deployment
 
-> **Two-phase plan.** Eazo Mobile / Eazo Creator are not yet live as of May 23. We deploy on Vercel during build & test, then migrate to Eazo for submission once that platform is up.
+> **Vercel is the active production target.** Eazo's `import_project` deploy API is returning 502 (platform-side outage as of 2026-05-28), so the planned Eazo path is deferred. The codebase stays Eazo-compatible — no Vercel-specific lock-in — so the Eazo path can be revisited if/when their platform recovers.
 
-### Phase 1 — Vercel (active during build & test)
+### Vercel (active production target)
 
-- **Target:** Vercel (auto-deploy from GitHub)
+- **CI/CD:** native Vercel Git integration. Push to `main` → production deploy; PRs → preview deploys. No deploy tokens in CI.
+- **Checks:** GitHub Actions (`.github/workflows/ci.yml`) runs typecheck + lint + build on push to `main` and on PRs. Actions does NOT deploy — Vercel's Git integration owns that.
+- **Build:** `vercel.json` sets `buildCommand` to run `pnpm db:push:ci` (= `drizzle-kit push --force`) FIRST on **production** deploys (`VERCEL_ENV=production`) to sync the Neon schema, then `pnpm build`. Preview deploys skip the migration (build only) so PRs never mutate the prod DB.
+  - ⚠️ `--force` auto-confirms drizzle-kit's data-loss prompt (required for non-interactive CI). A destructive schema change therefore auto-applies on the next prod deploy — review schema diffs before merging to `main`.
+- **Function duration:** the Inngest endpoint (`app/api/inngest/route.ts`) exports `maxDuration = 300` (Vercel Hobby max) so the agent's extended-thinking + web_search/web_fetch steps (30–150s) don't time out.
+- **Database:** Neon (neon.tech). Set `DATABASE_URL` to the **pooled** connection string (`-pooler` host) for runtime; optionally set `DIRECT_DATABASE_URL` to the **direct** string so migrations run DDL off the pgBouncer pooler.
 - **Deploy process:**
-  1. Push to GitHub
-  2. Vercel auto-deploys on push (configured once via Vercel UI: connect repo → set env vars → deploy)
+  1. Push to GitHub `main` (or open a PR for a preview)
+  2. Vercel auto-deploys (configured once via Vercel UI: connect repo → set env vars → deploy)
   3. Get public URL: `https://sidekick-<hash>.vercel.app`
   4. Set Telegram webhook to `https://sidekick-<hash>.vercel.app/api/telegram` via @BotFather or curl
-- **Database:** Vercel Postgres (Neon-backed). Provisioned via Vercel UI → "Storage" → Postgres → "Create". `DATABASE_URL` + `POSTGRES_URL` auto-injected.
 - **Required env vars / secrets** (set in Vercel project → Settings → Environment Variables):
+  - `DATABASE_URL` — Neon pooled connection string
+  - `DIRECT_DATABASE_URL` — Neon direct connection string (optional; for migrations)
   - `TELEGRAM_BOT_TOKEN` — from @BotFather on Telegram
   - `ANTHROPIC_API_KEY` — Anthropic console
   - `INNGEST_EVENT_KEY` + `INNGEST_SIGNING_KEY` — Inngest dashboard
   - `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` — Google Cloud Console (NextAuth)
   - `NEXTAUTH_SECRET` — generate locally via `openssl rand -base64 32`
   - `NEXTAUTH_URL` — set to Vercel URL (`https://sidekick-<hash>.vercel.app`)
-  - `DATABASE_URL` — auto-injected by Vercel Postgres integration
+  - `ENCRYPTION_SECRET` — generate via `openssl rand -hex 32` (BYO-key storage)
 
-### Phase 2 — Eazo (for submission)
+### Eazo (deferred — platform 502)
 
-- **Trigger:** Once Eazo Mobile is live and Eazo Creator is accessible.
-- **Process:**
+- **Status:** blocked. `import_project` deploy API returns 502 Bad Gateway (platform-side outage as of 2026-05-28, confirmed not our code). Revisit if/when the platform recovers. Code remains Eazo-compatible — no Vercel-specific lock-in introduced.
+- **Process (when unblocked):**
   1. Push final code to GitHub (already there)
   2. In Eazo chat: `import_project <repo-url>`
   3. Eazo inspects code, wires env vars, runs build check
-  4. **DB migration decision:** Eazo's auto-injected Postgres vs keep Vercel Postgres
-     - Path A: migrate schema + data to Eazo's DB (Drizzle migrations re-run; export/import data)
-     - Path B: keep Vercel Postgres (Eazo deploy points at same DATABASE_URL — simpler if Eazo allows)
+  4. **DB decision:** point Eazo at the same Neon `DATABASE_URL` (simplest) or migrate to Eazo's managed Postgres (Drizzle migrations re-run; export/import data)
   5. **Telegram webhook re-pointed** to the Eazo URL once known
   6. **NextAuth callback URL** added to Google OAuth console for Eazo URL
   7. Launch → Public → review → live on Eazo Mobile + `*.eazo.dev` URL
@@ -95,7 +99,7 @@ MVP demo flow: user registers in the Sidekick web app (control plane), gets inst
 - ✅ Bot posts a useful final response (Claude Sonnet 4.6) within ~30s — analyzer (LLM decision SILENT/DIRECT_REPLY/EXTEND_RUN/NEW_ACTION) → executor (Claude agent prompt with sliding context window) → posts response, status flips to `responded`. Verified end-to-end in Telegram with multi-paragraph LLM replies.
 - ✅ Control plane updates: activity feed shows the agent run with intent + reasoning; memory view shows facts — per-step `agent_run_steps` table captures every transition with kind+payload+timestamp; run detail page renders chat-style timeline. Memory inference: analyzer emits 0-3 inferred facts per call with speaker attribution ("Neelay is vegetarian", not "i am vegetarian") — keyword-based `remember` command was removed in favor of fully-semantic LLM-driven extraction; explicit `@bot rule: Y` command works for group rules; semantic retrieval via Voyage AI `voyage-3-lite` embeddings (512-dim, 200M-tokens/mo free tier) replaces dump-all-memory.
 - ✅ Web app is responsive: iPhone width (~390px, primary) AND desktop (1024px+, secondary) — mobile-first Tailwind throughout; tap targets ≥44px on all interactive elements (sanity-passed `/connect`, `/account`, `/groups/[id]`, `/runs/[runId]`).
-- ✅ App is publicly accessible — deployed via Eazo `import_project` to `*.eazo.dev`. (Vercel Phase 1 was skipped; went straight to Eazo.)
+- ✅ App is publicly accessible — deployed to Vercel (`https://sidekick-<hash>.vercel.app`) via native Git integration; Neon DB; GitHub Actions runs checks; Inngest endpoint `maxDuration=300`. Eazo deploy deferred (platform 502 as of 2026-05-28); code stays Eazo-compatible for later import.
 
 ## Required behaviors
 

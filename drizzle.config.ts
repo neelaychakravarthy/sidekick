@@ -16,6 +16,10 @@ export default defineConfig({
   schema: "./lib/db/schema.ts",
   out: "./drizzle",
   dbCredentials: {
-    url: process.env.DATABASE_URL ?? "",
+    // Neon exposes a pooled (pgBouncer, "-pooler" host) connection for
+    // serverless runtime and a direct/unpooled one for DDL. drizzle-kit push
+    // runs DDL, which can fail over the pooler — so prefer DIRECT_DATABASE_URL
+    // for migrations when set, falling back to DATABASE_URL otherwise.
+    url: process.env.DIRECT_DATABASE_URL ?? process.env.DATABASE_URL ?? "",
   },
 });

@@ -138,7 +138,7 @@ export const agentExecutor = inngest.createFunction(
       ctx.group.platform === "imessage"
         ? {
             platform: "imessage",
-            photonSpaceId: ctx.group.photonSpaceId ?? "",
+            bluebubblesChatGuid: ctx.group.bluebubblesChatGuid ?? "",
             groupId: ctx.group.id,
             text: ackText,
           }
@@ -225,10 +225,10 @@ export const agentExecutor = inngest.createFunction(
         const text = `⚠️ Daily free-tier limit hit (${count}/${limit} calls). Add your Anthropic API key at ${url} to keep using me today, or wait until UTC midnight.`;
         try {
           if (fresh.platform === "imessage") {
-            if (!fresh.photonSpaceId) return;
+            if (!fresh.bluebubblesChatGuid) return;
             await sendMessage({
               platform: "imessage",
-              photonSpaceId: fresh.photonSpaceId,
+              bluebubblesChatGuid: fresh.bluebubblesChatGuid,
               groupId: fresh.id,
               text,
             });
@@ -557,7 +557,7 @@ export const agentExecutor = inngest.createFunction(
       ctx.group.platform === "imessage"
         ? {
             platform: "imessage",
-            photonSpaceId: ctx.group.photonSpaceId ?? "",
+            bluebubblesChatGuid: ctx.group.bluebubblesChatGuid ?? "",
             groupId: ctx.group.id,
             text: finalText,
           }

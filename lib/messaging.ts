@@ -1,5 +1,5 @@
 import { db, schema } from "@/lib/db";
-import { sendPhotonMessage } from "@/lib/photon/client";
+import { sendBluebubblesMessage } from "@/lib/bluebubbles/client";
 import { bot } from "@/lib/telegram/bot";
 
 export type Platform = "telegram" | "imessage";
@@ -13,7 +13,7 @@ export type SendArgs =
     }
   | {
       platform: "imessage";
-      photonSpaceId: string;
+      bluebubblesChatGuid: string;
       groupId: string;
       text: string;
     };
@@ -42,7 +42,11 @@ export async function sendMessage(args: SendArgs): Promise<SendResult> {
     );
     externalMessageId = sent.message_id.toString();
   } else {
-    externalMessageId = await sendPhotonMessage(args.photonSpaceId, args.text);
+    // imessage via BlueBubbles
+    externalMessageId = await sendBluebubblesMessage(
+      args.bluebubblesChatGuid,
+      args.text,
+    );
   }
 
   // Persist the bot's outgoing message so it appears in future context windows.
@@ -64,7 +68,7 @@ export async function sendMessage(args: SendArgs): Promise<SendResult> {
     } else {
       await db.insert(schema.messages).values({
         ...baseValues,
-        photonMessageId: externalMessageId,
+        bluebubblesMessageGuid: externalMessageId,
       });
     }
   } catch (err) {

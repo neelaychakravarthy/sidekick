@@ -25,7 +25,8 @@ export default async function ConnectPage() {
   const botUsername = process.env.TELEGRAM_BOT_USERNAME ?? "Sidekick_The_Bot"
   const deeplink = `https://t.me/${botUsername}?startgroup=true`
   const claimCommand = `@${botUsername} claim ${token}`
-  const photonLineNumber = process.env.PHOTON_LINE_NUMBER ?? "(line not configured)"
+  const botHandle =
+    process.env.BLUEBUBBLES_BOT_HANDLE ?? "(Sidekick's iMessage address)"
   const imessageClaimCommand = `claim ${token}`
 
   return (
@@ -82,10 +83,10 @@ export default async function ConnectPage() {
 
         <Step n={4} title="Or: connect via iMessage">
           <p className="mb-3 text-sm">
-            Add the Sidekick line{" "}
-            <span className="font-mono font-semibold">{photonLineNumber}</span>{" "}
-            to an iMessage group, send any message, then paste the claim
-            command into the group:
+            Message Sidekick at{" "}
+            <span className="font-mono font-semibold">{botHandle}</span>{" "}
+            (or add that address to an iMessage group), then send the claim
+            command in that chat:
           </p>
           <pre className="overflow-x-auto rounded-md border bg-muted/50 px-4 py-3 text-sm font-mono">
             {imessageClaimCommand}

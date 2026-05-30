@@ -4,7 +4,7 @@ import { and, eq, gt, isNull } from "drizzle-orm";
 
 import { db, schema } from "@/lib/db";
 import { inngest } from "@/lib/inngest/client";
-import { sendMessage } from "@/lib/messaging";
+import { sendPhotonMessage } from "@/lib/photon/client";
 
 const TOLERANCE_SEC = 5 * 60;
 const CLAIM_RE = /^\s*\/?claim\s+([a-zA-Z0-9]+)\s*$/i;
@@ -318,13 +318,12 @@ async function sendPhotonReplyBestEffort(
   spaceId: string,
   text: string,
 ): Promise<void> {
+  // Dormant path. Sends directly via the Photon SDK client rather than through
+  // lib/messaging (which now routes iMessage to BlueBubbles). groupId is unused
+  // here but kept in the signature so callers don't change.
+  void groupId;
   try {
-    await sendMessage({
-      platform: "imessage",
-      photonSpaceId: spaceId,
-      groupId,
-      text,
-    });
+    await sendPhotonMessage(spaceId, text);
   } catch (err) {
     console.error("[photon] failed to send reply:", err);
   }

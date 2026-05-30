@@ -324,10 +324,10 @@ async function runAnalyzer({
       const text = `⚠️ Daily free-tier limit hit (${count}/${limit} calls). Add your Anthropic API key at ${url} to keep using me today, or wait until UTC midnight.`;
       try {
         if (fresh.platform === "imessage") {
-          if (!fresh.photonSpaceId) return;
+          if (!fresh.bluebubblesChatGuid) return;
           await sendMessage({
             platform: "imessage",
-            photonSpaceId: fresh.photonSpaceId,
+            bluebubblesChatGuid: fresh.bluebubblesChatGuid,
             groupId: fresh.id,
             text,
           });
@@ -517,10 +517,10 @@ async function runAnalyzer({
   if (decision.kind === "DIRECT_REPLY") {
     const sendResult = await step.run("post-direct-reply", async () => {
       if (group.platform === "imessage") {
-        if (!group.photonSpaceId) return { externalMessageId: null };
+        if (!group.bluebubblesChatGuid) return { externalMessageId: null };
         return await sendMessage({
           platform: "imessage",
-          photonSpaceId: group.photonSpaceId,
+          bluebubblesChatGuid: group.bluebubblesChatGuid,
           groupId: group.id,
           text: decision.text,
         });

@@ -110,6 +110,8 @@ export const groups = pgTable("groups", {
   telegramChatId: text("telegram_chat_id").unique(),
   // iMessage-only — Photon Spectrum space id.
   photonSpaceId: text("photon_space_id"),
+  // iMessage-only — BlueBubbles chat guid (active iMessage backend).
+  bluebubblesChatGuid: text("bluebubbles_chat_guid"),
   registeredByUserId: text("registered_by_user_id").references(
     () => users.id,
     { onDelete: "cascade" },
@@ -151,6 +153,8 @@ export const groupMembers = pgTable(
     telegramUsername: text("telegram_username"),
     // iMessage-only — Photon sender id (typically a phone number).
     photonSenderId: text("photon_sender_id"),
+    // iMessage-only — BlueBubbles sender handle (email/phone).
+    bluebubblesHandle: text("bluebubbles_handle"),
     displayName: text("display_name"),
     firstSeenAt: timestamp("first_seen_at", { withTimezone: true })
       .defaultNow()
@@ -184,6 +188,8 @@ export const messages = pgTable(
     // iMessage-only.
     photonMessageId: text("photon_message_id"),
     photonSenderId: text("photon_sender_id"),
+    // iMessage-only — BlueBubbles message guid (active iMessage backend).
+    bluebubblesMessageGuid: text("bluebubbles_message_guid"),
     text: text("text"),
     ts: timestamp("ts", { withTimezone: true }).notNull(),
     raw: jsonb("raw").$type<Record<string, unknown>>().notNull(),

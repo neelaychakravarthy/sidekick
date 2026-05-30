@@ -2,6 +2,7 @@ import { relations, sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
   boolean,
+  index,
   integer,
   jsonb,
   pgEnum,
@@ -25,6 +26,13 @@ export const agentRunStatus = pgEnum("agent_run_status", [
 export const memorySource = pgEnum("memory_source", ["inferred"]);
 
 export const platform = pgEnum("platform", ["telegram", "imessage"]);
+
+export const outboundStatus = pgEnum("outbound_status", [
+  "pending",
+  "sending",
+  "sent",
+  "failed",
+]);
 
 // ---------- Tables ----------
 
@@ -203,6 +211,40 @@ export const messages = pgTable(
   }),
 );
 
+export const outboundMessages = pgTable(
+  "outbound_messages",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    groupId: text("group_id")
+      .notNull()
+      .references(() => groups.id, { onDelete: "cascade" }),
+    platform: platform("platform").notNull().default("imessage"),
+    // iMessage target chat GUID (the only platform that uses the outbox today;
+    // Telegram sends go direct from Vercel).
+    bluebubblesChatGuid: text("bluebubbles_chat_guid"),
+    text: text("text").notNull(),
+    status: outboundStatus("status").notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    // The external message id (BlueBubbles guid) once the bridge sends it.
+    externalMessageId: text("external_message_id"),
+    errorText: text("error_text"),
+    // Set when the bridge claims the row for sending; used for stale-reclaim.
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    sentAt: timestamp("sent_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => ({
+    statusCreatedIdx: index("outbound_status_created").on(t.status, t.createdAt),
+  }),
+);
+
 export const agentRuns = pgTable("agent_runs", {
   id: text("id")
     .primaryKey()
@@ -322,6 +364,7 @@ export const groupsRelations = relations(groups, ({ one, many }) => ({
   }),
   members: many(groupMembers),
   messages: many(messages),
+  outbound: many(outboundMessages),
   runs: many(agentRuns),
   memory: many(groupMemory),
   rules: many(groupRules),
@@ -340,6 +383,16 @@ export const messagesRelations = relations(messages, ({ one }) => ({
     references: [groups.id],
   }),
 }));
+
+export const outboundMessagesRelations = relations(
+  outboundMessages,
+  ({ one }) => ({
+    group: one(groups, {
+      fields: [outboundMessages.groupId],
+      references: [groups.id],
+    }),
+  }),
+);
 
 export const agentRunsRelations = relations(agentRuns, ({ one, many }) => ({
   group: one(groups, {

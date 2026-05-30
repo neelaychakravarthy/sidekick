@@ -1,5 +1,4 @@
 import { db, schema } from "@/lib/db";
-import { sendBluebubblesMessage } from "@/lib/bluebubbles/client";
 import { bot } from "@/lib/telegram/bot";
 
 export type Platform = "telegram" | "imessage";
@@ -24,9 +23,11 @@ export type SendResult = {
 };
 
 /**
- * Channel-routing send. Dispatches to the Telegram bot or the Photon
- * Spectrum SDK depending on `args.platform`. Returns the external message
- * id (when known) so callers can persist it on `agent_runs`.
+ * Channel-routing send. Telegram sends go direct (Vercel → Telegram API is
+ * reachable). iMessage enqueues to the `outbound_messages` outbox, which the
+ * laptop bridge (`scripts/imessage-bridge.mjs`) drains via localhost
+ * BlueBubbles — Vercel never reaches the laptop. Returns the external message
+ * id (when known synchronously) so callers can persist it on `agent_runs`.
  *
  * Also persists the bot's outgoing message to the `messages` table with
  * is_bot=true so the analyzer's sliding context window sees what the bot
@@ -42,11 +43,17 @@ export async function sendMessage(args: SendArgs): Promise<SendResult> {
     );
     externalMessageId = sent.message_id.toString();
   } else {
-    // imessage via BlueBubbles
-    externalMessageId = await sendBluebubblesMessage(
-      args.bluebubblesChatGuid,
-      args.text,
-    );
+    // iMessage via poll-based outbox: enqueue and let the laptop bridge drain it.
+    // Vercel can't reach the laptop's BlueBubbles directly. The real BlueBubbles
+    // guid is filled in later (on ack); it's not known synchronously here.
+    await db.insert(schema.outboundMessages).values({
+      groupId: args.groupId,
+      platform: "imessage",
+      bluebubblesChatGuid: args.bluebubblesChatGuid,
+      text: args.text,
+      status: "pending",
+    });
+    externalMessageId = null;
   }
 
   // Persist the bot's outgoing message so it appears in future context windows.

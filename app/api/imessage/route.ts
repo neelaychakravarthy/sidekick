@@ -4,7 +4,7 @@ import { and, eq, gt, isNull } from "drizzle-orm";
 
 import { db, schema } from "@/lib/db";
 import { inngest } from "@/lib/inngest/client";
-import { sendBluebubblesMessage } from "@/lib/bluebubbles/client";
+import { sendMessage } from "@/lib/messaging";
 import { buildClaimPromptMessage } from "@/lib/messages";
 
 export const maxDuration = 60;
@@ -105,23 +105,29 @@ export async function POST(req: NextRequest) {
       ),
     });
     if (!claim) {
-      await sendBluebubblesMessage(
-        chatGuid,
-        "❌ That claim code is invalid, expired, or already used. Generate a new one from the dashboard.",
-      );
+      await sendMessage({
+        platform: "imessage",
+        bluebubblesChatGuid: chatGuid,
+        groupId: group.id,
+        text: "❌ That claim code is invalid, expired, or already used. Generate a new one from the dashboard.",
+      });
       return NextResponse.json({ ok: true, claim: "invalid" });
     }
     if (group.registeredByUserId !== null) {
       if (group.registeredByUserId === claim.userId) {
-        await sendBluebubblesMessage(
-          chatGuid,
-          "✅ This chat is already connected to your dashboard.",
-        );
+        await sendMessage({
+          platform: "imessage",
+          bluebubblesChatGuid: chatGuid,
+          groupId: group.id,
+          text: "✅ This chat is already connected to your dashboard.",
+        });
       } else {
-        await sendBluebubblesMessage(
-          chatGuid,
-          "❌ This chat is already connected to another dashboard. The current owner must disconnect it first.",
-        );
+        await sendMessage({
+          platform: "imessage",
+          bluebubblesChatGuid: chatGuid,
+          groupId: group.id,
+          text: "❌ This chat is already connected to another dashboard. The current owner must disconnect it first.",
+        });
       }
       return NextResponse.json({ ok: true, claim: "already_claimed" });
     }
@@ -137,10 +143,12 @@ export async function POST(req: NextRequest) {
       .set({ usedAt: new Date() })
       .where(eq(schema.claimTokens.id, claim.id));
     const who = user?.name ?? user?.email ?? "user";
-    await sendBluebubblesMessage(
-      chatGuid,
-      `✅ Connected to ${who}'s dashboard. I'm now active in this chat.`,
-    );
+    await sendMessage({
+      platform: "imessage",
+      bluebubblesChatGuid: chatGuid,
+      groupId: group.id,
+      text: `✅ Connected to ${who}'s dashboard. I'm now active in this chat.`,
+    });
     return NextResponse.json({ ok: true, claim: "ok" });
   }
 
@@ -148,7 +156,12 @@ export async function POST(req: NextRequest) {
   if (group.registeredByUserId === null) {
     // Post a one-time claim prompt, deduped via claimPromptSentAt.
     if (!group.claimPromptSentAt) {
-      await sendBluebubblesMessage(chatGuid, buildClaimPromptMessage());
+      await sendMessage({
+        platform: "imessage",
+        bluebubblesChatGuid: chatGuid,
+        groupId: group.id,
+        text: buildClaimPromptMessage(),
+      });
       await db
         .update(schema.groups)
         .set({ claimPromptSentAt: new Date(), updatedAt: new Date() })

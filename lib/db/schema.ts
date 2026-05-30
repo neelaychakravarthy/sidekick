@@ -125,6 +125,10 @@ export const groups = pgTable("groups", {
   rateLimitNotifiedAt: timestamp("rate_limit_notified_at", {
     withTimezone: true,
   }),
+  // When the one-time "claim me" prompt was posted on an unclaimed group's
+  // first @-mention. Set once and never reset — dedups the prompt to a single
+  // send per group row. Null = never prompted.
+  claimPromptSentAt: timestamp("claim_prompt_sent_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()
     .notNull(),

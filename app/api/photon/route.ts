@@ -255,6 +255,32 @@ async function handleClaim(
     );
     return;
   }
+  // Enforce one-owner-at-a-time. A group can only be connected to one
+  // dashboard. Re-load the group's owner here (the row was loaded earlier in
+  // POST but isn't threaded into this helper) and reject before consuming the
+  // token if it's already claimed.
+  const owned = await db.query.groups.findFirst({
+    where: eq(schema.groups.id, groupId),
+    columns: { registeredByUserId: true },
+  });
+  if (owned && owned.registeredByUserId !== null) {
+    if (owned.registeredByUserId === claim.userId) {
+      // Same user re-claiming their own group — idempotent, don't consume the token.
+      await sendPhotonReplyBestEffort(
+        groupId,
+        photonSpaceId,
+        "This group is already connected to your dashboard.",
+      );
+    } else {
+      // Claimed by someone else — reject without consuming the token.
+      await sendPhotonReplyBestEffort(
+        groupId,
+        photonSpaceId,
+        "This group is already connected to another dashboard. The current owner must disconnect it first (Disconnect button on their dashboard), then you can claim it.",
+      );
+    }
+    return;
+  }
   await db
     .update(schema.groups)
     .set({ registeredByUserId: claim.userId, updatedAt: new Date() })

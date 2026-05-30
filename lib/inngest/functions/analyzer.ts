@@ -9,6 +9,7 @@ import {
 import { db, schema } from "@/lib/db";
 import { embed, serializeEmbedding } from "@/lib/embeddings";
 import { inngest } from "@/lib/inngest/client";
+import { buildClaimPromptMessage } from "@/lib/messages";
 import { sendMessage } from "@/lib/messaging";
 import { retrieveTopMemories } from "@/lib/memory-retrieval";
 import {
@@ -62,6 +63,39 @@ async function runAnalyzer({
   });
   if (!groupForPlatform) {
     return { decision: "SILENT", reason: "no_group" };
+  }
+
+  // Gate: the bot is INERT until the group is claimed (connected to a dashboard).
+  // No agent_runs row, no LLM call, no memory extraction for unclaimed groups —
+  // this avoids burning the shared Anthropic key on untracked usage.
+  if (groupForPlatform.registeredByUserId === null) {
+    if (
+      forcedMode === "mention" &&
+      groupForPlatform.platform === "telegram" &&
+      groupForPlatform.telegramChatId
+    ) {
+      // Post a one-time "claim me" prompt (deduped via claimPromptSentAt).
+      await step.run("post-claim-prompt-once", async () => {
+        const g = await db.query.groups.findFirst({
+          where: eq(schema.groups.id, groupId),
+          columns: { id: true, telegramChatId: true, claimPromptSentAt: true },
+        });
+        if (g && !g.claimPromptSentAt && g.telegramChatId) {
+          await sendMessage({
+            platform: "telegram",
+            telegramChatId: g.telegramChatId,
+            groupId: g.id,
+            text: buildClaimPromptMessage(),
+          });
+          await db
+            .update(schema.groups)
+            .set({ claimPromptSentAt: new Date(), updatedAt: new Date() })
+            .where(eq(schema.groups.id, groupId));
+        }
+      });
+    }
+    logger.info("[analyzer] group unclaimed — inert", { groupId });
+    return { decision: "SILENT", reason: "unclaimed" };
   }
 
   // Create the agent_runs row at the TOP of the flow so every analyzer

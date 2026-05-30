@@ -3,6 +3,7 @@ import { Bot } from "grammy";
 
 import { db, schema } from "@/lib/db";
 import { inngest } from "@/lib/inngest/client";
+import { buildIntroMessage } from "@/lib/messages";
 import { sendMessage } from "@/lib/messaging";
 import { deriveDisplayName, upsertGroupMember } from "@/lib/telegram/members";
 
@@ -31,10 +32,6 @@ const TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "placeholder:not-a-real-token";
 
 const isCachedBot = globalThis.__sidekick_bot !== undefined;
 export const bot = globalThis.__sidekick_bot ?? new Bot(TOKEN);
-
-const INTRO_MESSAGE =
-  "Hi! I'm Sidekick. I help groups plan and coordinate — @ me to ask. " +
-  "Your messages stay in this group; see [link] for what I store. To opt out, reply STOP.";
 
 // Register handlers only once — skip if we're reusing a cached bot across
 // hot reloads / lambda warm starts.
@@ -76,7 +73,7 @@ if (!isCachedBot) {
             platform: "telegram",
             telegramChatId: chatId,
             groupId: group.id,
-            text: INTRO_MESSAGE,
+            text: buildIntroMessage(),
           });
         } catch (err) {
           console.error("[telegram] failed to post intro message:", err);
@@ -141,6 +138,28 @@ if (!isCachedBot) {
       await ctx.reply(
         "❌ This group isn't registered yet. Make sure I'm a member of the group, then try again.",
       );
+      return;
+    }
+
+    // Enforce one-owner-at-a-time. A group can only be connected to one dashboard.
+    if (group.registeredByUserId !== null) {
+      if (group.registeredByUserId === claim.userId) {
+        // Same user re-claiming their own group — idempotent, don't consume the token.
+        await sendMessage({
+          platform: "telegram",
+          telegramChatId: chatId,
+          groupId: group.id,
+          text: "✅ This group is already connected to your dashboard.",
+        });
+      } else {
+        // Claimed by someone else — reject without consuming the token.
+        await sendMessage({
+          platform: "telegram",
+          telegramChatId: chatId,
+          groupId: group.id,
+          text: "❌ This group is already connected to another dashboard. The current owner must disconnect it first (Disconnect button on their dashboard), then you can claim it.",
+        });
+      }
       return;
     }
 

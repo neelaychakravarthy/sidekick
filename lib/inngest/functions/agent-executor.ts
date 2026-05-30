@@ -102,6 +102,23 @@ export const agentExecutor = inngest.createFunction(
       };
     });
 
+    // Defense-in-depth: the analyzer short-circuits unclaimed groups before ever
+    // emitting agent.run-requested, so this shouldn't fire — but never run an
+    // untracked LLM call for an unclaimed group.
+    if (ctx.group.registeredByUserId === null) {
+      await step.run("mark-unclaimed-skipped", async () => {
+        await db
+          .update(schema.agentRuns)
+          .set({
+            status: "failed",
+            errorText: "group unclaimed",
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.agentRuns.id, runId));
+      });
+      return { runId, status: "skipped_unclaimed" };
+    }
+
     // Semantic memory retrieval — top-K cosine-ranked by trigger text, with
     // recency fallback when embeddings aren't available. Sequenced after
     // load-run-context so we have triggerText.
